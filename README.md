@@ -74,6 +74,7 @@ The large register count is dominated by the **ISSP probe shadow registers**
 |---|---|
 | `README.md` | This file — full project documentation |
 | `ARCHITECTURE.md` | Architecture diagrams (board, datapath, FSM, ALU, MULT/DIV, ISSP) |
+| `docs/diagrams/` | Pre-rendered PNGs of every diagram, for viewers that cannot render ELK |
 
 ### Software
 

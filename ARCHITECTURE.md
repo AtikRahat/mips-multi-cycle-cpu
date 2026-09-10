@@ -4,9 +4,21 @@ Companion to [`README.md`](README.md). Every diagram below reflects the RTL as
 written in `top_cpu_mc.v`, `cpu_top_mc.v`, `control_unit_mc.v`, `ALU_32_bit.v`,
 `regfile.v`, `imem.v`, and `dmem.v`.
 
-> The diagrams are [Mermaid](https://mermaid.js.org/). They render inline on
-> GitHub, GitLab, in VS Code (with a Mermaid extension), and in Obsidian. In a
-> plain text viewer you will see the Mermaid source instead of a picture.
+> The diagrams are [Mermaid](https://mermaid.js.org/). They render inline in VS
+> Code (with a Mermaid extension), Obsidian, and any renderer with the
+> [ELK layout plugin](https://github.com/mermaid-js/mermaid/tree/develop/packages/mermaid-layout-elk)
+> registered. In a plain text viewer you will see the Mermaid source instead of
+> a picture.
+>
+> ⚠️ **Renderer note.** The flowcharts use the ELK layout engine for orthogonal,
+> untangled edges. GitHub's built-in Mermaid renderer does **not** bundle ELK, so
+> on GitHub these may fall back to the default layout or fail to render. If you
+> need them guaranteed, view the pre-rendered PNGs in
+> [`docs/diagrams/`](docs/diagrams/). The two state diagrams are unaffected (ELK
+> applies to flowcharts only).
+>
+> **Colour key** — orange = storage, blue = compute, green = memory,
+> purple = control, grey = clock/reset, red = I/O.
 
 ---
 
@@ -17,55 +29,53 @@ pin wiring, clock division, debouncing, and the debug probes — and wraps the
 CPU, which runs on a divided clock.
 
 ```mermaid
-flowchart TB
-    CLK["clk PIN_23 — 50 MHz"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    CLK["clk<br/>PIN_23, 50 MHz"]
 
-    DIV["/4 clock divider"]
-    CCP["cpu_clk — 12.5 MHz"]
+    subgraph SYN["Clock and reset"]
+        direction TB
+        DIV["/4 divider"]
+        CCP["cpu_clk<br/>12.5 MHz"]
+        D2["debounce<br/>KEY[2]"]
+        SY2["3-FF sync<br/>+ edge detect"]
+        D3["debounce<br/>KEY[3]"]
+        SY3["2-FF sync<br/>level"]
+    end
 
-    D2["debounce<br/>KEY[2] PIN_90"]
-    D3["debounce<br/>KEY[3] PIN_91"]
-    D4["debounce<br/>KEY[4] PIN_25"]
+    subgraph SER["UART program loader"]
+        direction TB
+        URX["uart_rx<br/>9600 8N1"]
+        ULD["uart_loader"]
+    end
 
-    SY2["3-FF sync then edge detect"]
-    SY3["2-FF sync — level"]
+    CPU["cpu_top_mc.v<br/>multi-cycle datapath<br/>+ control FSM"]
 
-    URX["uart_rx — 9600 8N1"]
-    ULD["uart_loader"]
+    subgraph PER["Board I/O"]
+        direction TB
+        D4["debounce<br/>KEY[4]"]
+        SEG["seg7_display<br/>+ seg7_decoder"]
+        LED["LEDG[3:0]<br/>active-LOW"]
+        DBG["5 x ISSP<br/>debug cores"]
+    end
 
-    CPU["cpu_top_mc.v — multi-cycle datapath and control FSM"]
-
-    SEG["seg7_display and seg7_decoder"]
-    LED["LEDG[3:0] — active-LOW"]
-    DBG["5 x ISSP debug cores to JTAG"]
-
-    CLK --> DIV
-    DIV --> CCP
-    CCP --> CPU
-
-    CLK --> D2
-    CLK --> D3
-    CLK --> D4
-    CLK --> URX
-    CLK --> SEG
-
-    D2 --> SY2
-    SY2 -->|"start_pulse, gated by uart_loading"| CPU
-
-    D3 --> SY3
-    SY3 -->|rst| CPU
-
-    D4 -->|mmio_btn_in| CPU
-
-    URX --> ULD
-    ULD -->|"wr_clk, wr_en, wr_addr, wr_data"| CPU
+    CLK --> DIV --> CCP --> CPU
+    CLK --> D2 --> SY2 -->|start_pulse| CPU
+    CLK --> D3 --> SY3 -->|rst| CPU
+    CLK --> D4 -->|mmio_btn_in| CPU
+    CLK --> URX --> ULD -->|"program image"| CPU
 
     CPU -->|mmio_led_out| LED
-    CPU -->|"debug register, PC, state, HI/LO"| DBG
-    CPU -->|"$5, $6, $7, $8 and overflow flag"| SEG
+    CPU -->|"PC, state, HI/LO, regs"| DBG
+    CPU -->|"$5..$8, overflow"| SEG
 
-    KEY10["KEY[1:0]"]
-    KEY10 -->|display select| SEG
+    classDef clk fill:#f1f3f5,stroke:#868e96,color:#343a40
+    classDef cpu fill:#e7f5ff,stroke:#1971c2,color:#0b3d66,stroke-width:2px
+    classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+
+    class CLK,DIV,CCP,D2,SY2,D3,SY3,D4 clk
+    class CPU cpu
+    class URX,ULD,SEG,LED,DBG io
 ```
 
 **Clock domains.** Everything left of `cpu_top_mc`'s clock input runs on the raw
@@ -81,105 +91,94 @@ cross into `cpu_clk` — `rst` and `start_pulse` — and both are synchronized f
 `cpu_top_mc.v` holds *all* state; the FSM holds none. The FSM observes a few
 status signals and issues latch enables.
 
-### 2.1 Data flow through the shared datapath
+### 2.1 Data flow
+
+This shows the **data path only**. The control signals are deliberately omitted:
+there are 18 of them fanning out from a single FSM node, and drawing each as an
+edge turns the diagram into an unreadable web. They are tabulated in §2.4.
 
 ```mermaid
-flowchart TD
-    FSM["control_unit_mc.v — FSM, holds no data"]
-
-    PC["pc register"]
-    IMEM["imem.v — 4096 x 32"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    PC["pc"]
+    IMEM["imem.v<br/>4096 x 32"]
     IR["ir_reg"]
-    RF["regfile.v — 32 x 32, $0 always reads 0"]
+    PCPLUS["pc_plus1_reg"]
+    RF["regfile.v<br/>32 x 32, $0 reads 0"]
     A["a_reg"]
     B["b_reg"]
-    BMUX["ALU B mux — alu_src"]
+    BTR["branch_target_reg"]
+    BMUX{"B mux<br/>alu_src"}
     ALU["ALU_32_bit.v"]
     AO["alu_out_reg"]
-    MMIO["MMIO decode — address 30 and 31"]
-    DM["dmem.v — 32 x 32"]
+    MMIO["MMIO decode<br/>addr 30 / 31"]
+    DM["dmem.v<br/>32 x 32"]
     MDR["mdr_reg"]
-    WBMUX["write_data mux — wb_sel, reg_dst"]
-    MD["MULT / DIV unit"]
-    PCPLUS["pc_plus1_reg"]
-    BTR["branch_target_reg"]
-    PCMUX["pc_next mux — pc_source"]
+    MD["MULT / DIV<br/>HI / LO"]
+    WBMUX{"writeback mux<br/>wb_sel, reg_dst"}
+    PCMUX{"pc_next mux<br/>pc_source"}
 
     PC -->|address| IMEM
     IMEM -->|instruction| IR
     PC --> PCPLUS
-
     IR -->|"rs, rt"| RF
-    RF -->|read_data1| A
-    RF -->|read_data2| B
-    PCPLUS -->|"plus sign-extended imm16"| BTR
+    RF -->|read 1| A
+    RF -->|read 2| B
+    PCPLUS -->|"+ imm16"| BTR
 
     A --> ALU
     B --> BMUX
     IR -->|imm_sext| BMUX
     BMUX -->|alu_b| ALU
     ALU -->|Result| AO
-    ALU -->|"Cout, Ov"| FSM
 
-    AO -->|"address bits 4:0"| MMIO
-    MMIO -->|"real writes"| DM
+    AO -->|"addr bits 4:0"| MMIO
+    MMIO -->|"real access"| DM
     B -->|write data| DM
     DM -->|read data| MDR
 
     AO --> WBMUX
     MDR --> WBMUX
-    MD -->|"HI, LO"| WBMUX
+    MD --> WBMUX
+    PCPLUS -->|"JAL return addr"| WBMUX
     WBMUX -->|write_data| RF
 
-    PCPLUS -->|"JAL return address"| WBMUX
-    PCMUX -->|next PC| PC
     PCPLUS --> PCMUX
     BTR --> PCMUX
     IR -->|"JAL target"| PCMUX
     A -->|"JR target"| PCMUX
+    PCMUX -->|next PC| PC
 
-    FSM -.->|"ir_write, pc_plus1_write"| IR
-    FSM -.->|ab_write| A
-    FSM -.->|ab_write| B
-    FSM -.->|branch_target_write| BTR
-    FSM -.->|alu_out_write| AO
-    FSM -.->|pc_write| PC
-    FSM -.->|mdr_write| MDR
-    FSM -.->|reg_write| RF
-    FSM -.->|md_init| MD
-    FSM -.->|dmem_write| DM
+    classDef store fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef mem fill:#ebfbee,stroke:#2f9e44,color:#14532d
+    classDef comp fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
 
-    A -.->|regs_equal| FSM
-    IR -.->|"opcode, funct"| FSM
-    MD -.->|md_counter_done| FSM
+    class PC,IR,PCPLUS,A,B,BTR,AO,MDR,RF store
+    class IMEM,DM,MMIO mem
+    class ALU,MD,BMUX,WBMUX,PCMUX comp
 ```
 
 ### 2.2 Field decode
 
 Decoded combinationally from the **latched** instruction, so the fields stay
-valid through ID/EX/MEM/WB — not just during IF:
+valid through ID/EX/MEM/WB — not just during IF.
 
-```mermaid
-flowchart LR
-    IR["ir_reg[31:0]"]
-    OP["opcode[5:0]"]
-    RS["rs[4:0]"]
-    RT["rt[4:0]"]
-    RD["rd[4:0]"]
-    FN["funct[5:0]"]
-    IMM["imm16[15:0]"]
-    SEXT["imm_sext[31:0]"]
-    JT["jump_target[11:0]"]
-
-    IR -->|"bits 31:26"| OP
-    IR -->|"bits 25:21"| RS
-    IR -->|"bits 20:16"| RT
-    IR -->|"bits 15:11"| RD
-    IR -->|"bits 5:0"| FN
-    IR -->|"bits 15:0"| IMM
-    IMM -->|sign extend| SEXT
-    IR -->|"bits 11:0"| JT
 ```
+  31            26 25      21 20      16 15      11 10        6 5        0
+ ┌────────────────┬──────────┬──────────┬──────────┬───────────┬──────────┐
+ │  opcode [5:0]  │   rs     │   rt     │   rd     │    (0)    │ funct[5:0]│
+ └────────────────┴──────────┴──────────┴──────────┴───────────┴──────────┘
+```
+
+| Source slice | Field | Notes |
+|---|---|---|
+| `ir_reg[31:26]` | `opcode[5:0]` | Selects the instruction class |
+| `ir_reg[25:21]` | `rs[4:0]` | First source register |
+| `ir_reg[20:16]` | `rt[4:0]` | Second source, or destination for I-type |
+| `ir_reg[15:11]` | `rd[4:0]` | R-type destination |
+| `ir_reg[5:0]` | `funct[5:0]` | R-type operation selector |
+| `ir_reg[15:0]` | `imm16[15:0]` | Sign-extended to `imm_sext[31:0]` |
+| `ir_reg[11:0]` | `jump_target[11:0]` | JAL absolute target |
 
 ### 2.3 The three output muxes
 
@@ -208,6 +207,8 @@ The PC updates **once per instruction, during EX**, for every instruction type.
 
 ### 2.4 Control and status signals
 
+These are the edges omitted from §2.1.
+
 | Direction | Signals |
 |---|---|
 | Out — latch enables | `ir_write`, `pc_plus1_write`, `ab_write`, `branch_target_write`, `alu_out_write`, `pc_write`, `mdr_write`, `md_init`, `md_step`, `hi_write`, `lo_write` |
@@ -218,12 +219,13 @@ The PC updates **once per instruction, during EX**, for every instruction type.
 
 ## 3. Instruction lifecycle
 
-The same hardware, cycled one state at a time. This is the view that makes the
-multi-cycle nature obvious: one shared datapath, reused 3–5 times per
-instruction.
+The normal execution path — one shared datapath, reused 3–5 times per
+instruction. The complete FSM, including `TRAP` and `HALT`, is in §6.2.
 
 ```mermaid
 stateDiagram-v2
+    direction LR
+
     [*] --> IDLE
     IDLE --> IF : start pulse
     IF --> ID
@@ -236,19 +238,10 @@ stateDiagram-v2
     MEM --> WB : LW
     MEM --> IF : SW
 
-    WB --> IF
-
-    note right of IDLE
-        rst returns the FSM to IDLE
-        from any state
-    end note
-
-    note left of IF
-        Auto-run: every instruction ends
-        back at IF, so one KEY[2] press
-        runs the whole program
-    end note
+    WB --> IF : auto-run
 ```
+
+`rst` returns the FSM to `IDLE` from any state.
 
 ---
 
@@ -258,41 +251,31 @@ Patterson & Hennessy style: 31 identical `alu_1bit` slices plus an `alu_1Xbit`
 slice for the MSB that additionally exposes its raw sum bit for `SLT`.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 flowchart LR
-    AI["A[i]"]
-    BI["B[i]"]
-    NA["N1 — invert if Ainvert"]
-    NB["N2 — invert if Binvert"]
-    ANDG["AND"]
-    ORG["OR"]
-    FA["full_adder"]
-    SUM["Sum"]
-    LT["Less — the LT signal"]
-    MUX["mux4x1 — Sel equals Op[1:0]"]
-    RES["Result[i]"]
+    AI["A[i]"] --> NA["N1<br/>invert if Ainvert"]
+    BI["B[i]"] --> NB["N2<br/>invert if Binvert"]
+    CIN["Cin"] --> FA
 
-    AI --> NA
-    BI --> NB
-
-    NA --> ANDG
+    NA --> ANDG["AND"]
     NB --> ANDG
-    NA --> ORG
+    NA --> ORG["OR"]
     NB --> ORG
-    NA --> FA
+    NA --> FA["full_adder"]
     NB --> FA
+    FA --> SUM["Sum"]
 
-    CIN["Cin"]
-    CIN --> FA
-    FA --> SUM
-
-    ANDG --> MUX
+    LT["Less<br/>(the LT signal)"]
+    ANDG --> MUX{"mux4x1<br/>Sel = Op[1:0]"}
     ORG --> MUX
     SUM --> MUX
     LT --> MUX
-    MUX --> RES
+    MUX -->|"00 AND / 01 OR<br/>10 SUM / 11 LESS"| RES["Result[i]"]
 
-    note1["Sel 00 = AND, 01 = OR, 10 = SUM, 11 = LESS"]
-    MUX --- note1
+    classDef comp fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef sel fill:#f3f0ff,stroke:#7048e8,color:#3b2a75
+    class AI,BI,CIN,NA,NB,ANDG,ORG,FA,SUM,LT comp
+    class MUX,RES sel
 ```
 
 **MSB slice (bit 31).** Identical to the above, plus two extra outputs:
@@ -303,13 +286,11 @@ flowchart LR
 `+1` that makes `SUB` work. Only slice 0 receives `LT`, the SLT comparison
 result. Every other slice takes the carry from the slice below.
 
-**Top-level flags:**
-
-```
-  Cout = carry out of bit 31
-  Ov   = Carry[30] ^ Cout     signed overflow: carry-in XOR carry-out of MSB
-  LT   = Ov ^ Set             SLT result, corrected when overflow occurred
-```
+| Top-level flag | Expression |
+|---|---|
+| `Cout` | carry out of bit 31 |
+| `Ov` | `Carry[30] ^ Cout` — signed overflow, carry-in XOR carry-out of MSB |
+| `LT` | `Ov ^ Set` — SLT result, corrected when overflow occurred |
 
 **Op encoding** — `Op = {Ainvert, Binvert, Op[1:0]}`:
 
@@ -331,40 +312,63 @@ Both operations share one 64-bit working register and one 32-cycle state
 `ir_reg` is stable, so only one can ever be in flight.
 
 ```mermaid
-flowchart TD
-    INIT["EX — md_init"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    subgraph INIT["1. EX — md_init"]
+        direction TB
+        I1["md_sign_reg =<br/>a[31] XOR b[31]"]
+        I2["md_counter = 0"]
+        I3["a_abs, b_abs<br/>(magnitudes)"]
+    end
 
-    INIT --> SIGN["md_sign_reg gets a_reg[31] XOR b_reg[31]"]
-    INIT --> CNT["md_counter gets 0"]
-    INIT --> ABS["a_abs and b_abs — magnitudes"]
+    SEL{"is_mult<br/>or is_div"}
+    CQ{"md_counter<br/>= 31?"}
 
-    SIGN --> SEL{"is_mult or is_div"}
+    subgraph LOOP["2. MD_LOOP — 32 iterations"]
+        direction TB
+        M["MULT — shift-add, right<br/>if low bit set, add multiplicand<br/>to high half, then shift right"]
+        D["DIV — restoring, left<br/>shift left, subtract divisor<br/>from high half, set quotient bit"]
+    end
 
-    SEL -->|MULT| MSET["md_b_reg gets a_abs — multiplicand<br/>md_product_reg gets b_abs in LOW half"]
-    SEL -->|DIV| DSET["md_b_reg gets b_abs — divisor<br/>md_product_reg gets a_abs in LOW half"]
+    subgraph DONE["3. MD_DONE — latch"]
+        direction TB
+        MOut["MULT:<br/>HI = product[63:32]<br/>LO = product[31:0]"]
+        DOut["DIV:<br/>LO = quotient<br/>HI = remainder"]
+    end
 
-    MSET --> LOOP["MD_LOOP — 32 iterations, md_step"]
-    DSET --> LOOP
+    SGN["apply sign correction<br/>write HI / LO"]
 
-    LOOP --> MSTEP["MULT — shift-add, shifting RIGHT<br/>if md_product bit 0 then add md_b_reg to high half<br/>then shift the whole 64-bit register right by 1"]
-    LOOP --> DSTEP["DIV — restoring division, shifting LEFT<br/>shift left, subtract divisor from high half<br/>negative restores and shifts in 0, else keeps and shifts in 1"]
+    INIT --> SEL
+    SEL -->|MULT| M
+    SEL -->|DIV| D
+    M --> CQ
+    D --> CQ
+    CQ -->|no| LOOP
+    CQ -->|yes| DONE
+    MOut --> SGN
+    DOut --> SGN
 
-    MSTEP --> DONEQ{"md_counter_done"}
-    DSTEP --> DONEQ
-    DONEQ -->|no| LOOP
-    DONEQ -->|yes| MDD["MD_DONE — sign-correct and latch"]
-
-    MDD --> MOUT["MULT result — 64-bit product<br/>HI gets product 63:32<br/>LO gets product 31:0"]
-    MDD --> DOUT["DIV result<br/>HI gets remainder, LO gets quotient<br/>remainder follows the dividend sign"]
+    classDef store fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef comp fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef sel fill:#f3f0ff,stroke:#7048e8,color:#3b2a75
+    class I1,I2,I3,MOut,DOut,SGN store
+    class M,D comp
+    class SEL,CQ sel
 ```
 
-After the 32 division steps the **quotient sits in the low half and the
-remainder in the high half** — exactly the MIPS `LO`/`HI` convention, so no
-reshuffling is needed. The remainder takes the **dividend's** sign (`a_reg[31]`),
-matching real MIPS.
+**Initialisation.** `MULT` loads `md_b_reg` with the multiplicand (`a_abs`) and
+`md_product_reg` with the multiplier in the low half. `DIV` loads `md_b_reg`
+with the divisor (`b_abs`) and the dividend in the low half.
 
-`HI` and `LO` are read back through the write-back mux by `MFHI` (`wb_sel = 2`)
-and `MFLO` (`wb_sel = 3`).
+**Loop body.** `MULT` conditionally adds and shifts right. `DIV` shifts left,
+subtracts the divisor from the high half, and either restores (shifting in `0`)
+or keeps the result (shifting in `1`).
+
+**Result.** After 32 steps the **quotient sits in the low half and the remainder
+in the high half** — exactly the MIPS `LO`/`HI` convention, so no reshuffling is
+needed. The remainder takes the **dividend's** sign (`a_reg[31]`), matching real
+MIPS. `HI` and `LO` are read back through the write-back mux by `MFHI`
+(`wb_sel = 2`) and `MFLO` (`wb_sel = 3`).
 
 ---
 
@@ -389,47 +393,37 @@ and `MFLO` (`wb_sel = 3`).
 
 ```mermaid
 stateDiagram-v2
+    direction TB
+
     [*] --> IDLE
-
-    IDLE --> IF : start pulse
-    IDLE --> IDLE : rst held
-
+    IDLE --> IF : start
     IF --> ID
     ID --> EX
 
-    EX --> TRAP : illegal opcode
-    EX --> HALT : HALT instruction
-    EX --> MD_LOOP : MULT or DIV
-    EX --> MEM : LW or SW
-    EX --> WB : R-type, ADDI, MFHI, MFLO
-    EX --> IF : BEQ, BNE, JR, JAL
+    EX --> TRAP : illegal
+    EX --> HALT : HALT instr
+    EX --> MD_LOOP : MULT / DIV
+    EX --> MEM : LW / SW
+    EX --> WB : R-type, ADDI,<br/>MFHI, MFLO
+    EX --> IF : BEQ, BNE,<br/>JR, JAL
 
     MEM --> WB : LW
     MEM --> IF : SW
-
     WB --> IF
 
-    MD_LOOP --> MD_LOOP : md_counter_done is 0
-    MD_LOOP --> MD_DONE : md_counter_done is 1
+    MD_LOOP --> MD_DONE : counter = 31
     MD_DONE --> IF
 
-    TRAP --> TRAP : stuck — rst only
-    HALT --> HALT : stuck — rst only
-
-    note right of TRAP
-        Sticky illegal_opcode flag
-        latches here
-    end note
-
-    note left of IF
-        Branches ending at IF implement
-        auto-run: one KEY[2] press runs
-        the entire program
-    end note
+    TRAP --> TRAP
+    HALT --> HALT
 ```
 
-`MD_LOOP` self-loops 32 times, then proceeds to `MD_DONE`. `TRAP` and `HALT` are
-absorbing — only `rst` leaves them.
+**Auto-run.** Every instruction returns to `IF`, not `IDLE`. `IDLE` is entered
+only once, after reset, so a single `KEY[2]` press runs the entire program.
+
+**Absorbing states.** `TRAP` (illegal opcode) and `HALT` (explicit stop) are
+permanent — only `rst` leaves them. The sticky `illegal_opcode` flag latches when
+`TRAP` is entered.
 
 ### 6.3 Control signals asserted per state
 
@@ -449,7 +443,9 @@ absorbing — only `rst` leaves them.
 | `dmem_write` | | | | | ● ² | | | | | |
 | `reg_write` | | | | ● ³ | | ● ⁴ | | | | |
 
-¹ MULT / DIV only ² SW only ³ JAL only (`$31` ← `pc_plus1_reg`)
+¹ MULT / DIV only  
+² SW only  
+³ JAL only (`$31` ← `pc_plus1_reg`)  
 ⁴ rtype / addi / lw / mfhi / mflo only
 
 ---
@@ -461,21 +457,26 @@ used. Two addresses are intercepted **before** reaching `dmem.v`, leaving that
 module completely unmodified.
 
 ```mermaid
-flowchart TD
-    ADDR["alu_out_reg bits 4:0"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    ADDR["alu_out_reg[4:0]"]
+    DM["dmem.v<br/>32 x 32"]
 
-    ADDR -->|"equals 31"| LEDA["is_led_addr"]
-    ADDR -->|"equals 30"| BTNA["is_btn_addr"]
-    ADDR -->|otherwise| REAL["dmem.v — 32 x 32"]
+    ADDR -->|"== 31"| LEDA["is_led_addr"]
+    ADDR -->|"== 30"| BTNA["is_btn_addr"]
+    ADDR -->|otherwise| DM
 
-    LEDA -->|"on SW"| LED["led_reg gets b_reg bits 3:0<br/>real dmem write suppressed"]
-    LED --> OUT["invert then LEDG[3:0]"]
+    LEDA -->|"on SW"| LED["led_reg = b_reg[3:0]<br/>real write suppressed"]
+    LED --> OUT["invert<br/>LEDG[3:0]"]
 
-    BTNA -->|"on LW"| BTN["read_data gets zero-extended KEY[4]"]
+    BTNA -->|"on LW"| BTN["read_data =<br/>{31'b0, KEY[4]}"]
 
-    BREG["b_reg — write data"]
-    BREG --> REAL
-    BREG --> LED
+    classDef store fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef mem fill:#ebfbee,stroke:#2f9e44,color:#14532d
+    classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+    class ADDR store
+    class DM mem
+    class LED,OUT,BTN,LEDA,BTNA io
 ```
 
 | Address | `LW` | `SW` |
@@ -495,44 +496,43 @@ inside `cpu_top_mc.v`, since it arrives from a different clock domain.
 ## 8. Clock, reset, and clock-domain crossing
 
 ```mermaid
-flowchart TB
-    subgraph RAW["RAW 50 MHz DOMAIN"]
-        CLK["clk — 50 MHz"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    subgraph RAW["RAW 50 MHz domain"]
+        CLK["clk 50 MHz"]
         DIV["/4 divider"]
         D2["debounce KEY[2]"]
         D3["debounce KEY[3]"]
         D4["debounce KEY[4]"]
-        URX["uart_rx — 9600 8N1"]
+        URX["uart_rx 9600 8N1"]
         ULD["uart_loader"]
+        IMEMW["imem write port"]
     end
 
-    subgraph SLOW["cpu_clk DOMAIN — 12.5 MHz"]
-        CCP["cpu_clk"]
-        SY2["3-FF sync then edge detect"]
-        SY3["2-FF sync — level"]
+    subgraph SLOW["cpu_clk domain — 12.5 MHz"]
+        SY2["3-FF sync + edge detect"]
+        SY3["2-FF sync level"]
+        BSYNC["2-FF sync btn_sync1/2"]
         CPU["cpu_top_mc.v"]
-        BSYNC["2-FF sync — btn_sync1, btn_sync2"]
     end
 
     CLK --> DIV
-    DIV --> CCP
-    CCP --> CPU
-
-    CLK --> D2
-    CLK --> D3
-    CLK --> D4
-
+    DIV -->|cpu_clk| CPU
     D2 -->|level| SY2
-    SY2 -->|"start_pulse — one full cpu_clk wide"| CPU
-
+    SY2 -->|start_pulse| CPU
     D3 -->|level| SY3
-    SY3 -->|"rst — held level, not edge detected"| CPU
-
+    SY3 -->|"rst — held"| CPU
     D4 --> BSYNC
     BSYNC -->|mmio_btn_in| CPU
-
     URX --> ULD
-    ULD -->|"imem write port, wr_clk is 50 MHz"| CPU
+    ULD --> IMEMW
+
+    classDef clk fill:#f1f3f5,stroke:#868e96,color:#343a40
+    classDef cpu fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+    class CLK,DIV,D2,D3,D4 clk
+    class SY2,SY3,BSYNC,CPU cpu
+    class URX,ULD,IMEMW io
 ```
 
 `start` is edge-detected **inside the `cpu_clk` domain**, not the fast one. A
@@ -550,14 +550,14 @@ Five `altera_in_system_sources_probes` cores, clocked from the JTAG domain.
 Word *n* within an instance occupies bits `[32n+31 : 32n]`, with no gaps.
 
 ```mermaid
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 flowchart LR
-    RLO["cpu_issp_regs_lo — 480 bits<br/>$0 to $14"]
-    RHI["cpu_issp_regs_hi — 480 bits<br/>$15 to $29"]
-    DLO["cpu_issp_dmem_lo — 480 bits<br/>mem[0] to mem[14]"]
-    DHI["cpu_issp_dmem_hi — 480 bits<br/>mem[15] to mem[29]"]
-    STA["cpu_issp_status — 312 bits<br/>PC, state, flags, HI/LO, ir_reg,<br/>dmem transaction, $30, $31, mem[30], mem[31]"]
-
-    CPU["cpu_top_mc.v debug ports"]
+    CPU["cpu_top_mc.v<br/>debug ports"]
+    RLO["cpu_issp_regs_lo<br/>480 bits<br/>$0 .. $14"]
+    RHI["cpu_issp_regs_hi<br/>480 bits<br/>$15 .. $29"]
+    DLO["cpu_issp_dmem_lo<br/>480 bits<br/>mem[0] .. mem[14]"]
+    DHI["cpu_issp_dmem_hi<br/>480 bits<br/>mem[15] .. mem[29]"]
+    STA["cpu_issp_status<br/>312 bits<br/>PC, state, flags, HI/LO,<br/>ir_reg, dmem, $30, $31"]
     JTAG["JTAG debugger"]
 
     CPU --> RLO
@@ -571,6 +571,13 @@ flowchart LR
     DLO --> JTAG
     DHI --> JTAG
     STA --> JTAG
+
+    classDef store fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef mem fill:#ebfbee,stroke:#2f9e44,color:#14532d
+    classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+    class CPU,RLO,RHI store
+    class DLO,DHI mem
+    class STA,JTAG io
 ```
 
 | Core | Width | Bits `[31:0]` | Bits `[479:448]` |
@@ -611,47 +618,35 @@ are folded into the status core, which has headroom.
 
 ---
 
-## 10. Instruction timing (cycles on `cpu_clk`, 12.5 MHz)
+## 10. Instruction timing
 
-The x-axis of the chart below is the **cycle index**, not wall-clock time.
-`IDLE` is not shown: it is visited once after reset and then never again.
+Cycles on `cpu_clk` (12.5 MHz). **Row length is proportional to the cycle
+count** — note how much longer `MULT` / `DIV` is than everything else.
 
 ```mermaid
-gantt
-    title Instruction timing — cycles on cpu_clk
-    dateFormat X
-    axisFormat %s
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    A0["R-type / ADDI / MFHI / MFLO — 4 cycles"] --> A1
+    A1["IF"] --> A2["ID"] --> A3["EX"] --> A4["WB"]
 
-    section R-type, ADDI, MFHI, MFLO
-    IF        :r1, 0, 1
-    ID        :r2, 1, 1
-    EX        :r3, 2, 1
-    WB        :r4, 3, 1
+    B0["LW — 5 cycles"] --> B1
+    B1["IF"] --> B2["ID"] --> B3["EX"] --> B4["MEM"] --> B5["WB"]
 
-    section LW
-    IF        :l1, 0, 1
-    ID        :l2, 1, 1
-    EX        :l3, 2, 1
-    MEM       :l4, 3, 1
-    WB        :l5, 4, 1
+    C0["SW — 4 cycles"] --> C1
+    C1["IF"] --> C2["ID"] --> C3["EX"] --> C4["MEM"]
 
-    section SW
-    IF        :s1, 0, 1
-    ID        :s2, 1, 1
-    EX        :s3, 2, 1
-    MEM       :s4, 3, 1
+    D0["BEQ / BNE / JR / JAL — 3 cycles"] --> D1
+    D1["IF"] --> D2["ID"] --> D3["EX"]
 
-    section BEQ, BNE, JR, JAL
-    IF        :b1, 0, 1
-    ID        :b2, 1, 1
-    EX        :b3, 2, 1
+    E0["MULT / DIV — 36 cycles"] --> E1
+    E1["IF"] --> E2["ID"] --> E3["EX"] --> E4["MD_LOOP x 32"] --> E5["MD_DONE"]
 
-    section MULT and DIV
-    IF        :m1, 0, 1
-    ID        :m2, 1, 1
-    EX        :m3, 2, 1
-    MD_LOOP x32 :m4, 3, 32
-    MD_DONE   :m5, 35, 1
+    classDef stage fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef big fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef lbl fill:#f8f9fa,stroke:#495057,color:#212529
+    class A1,A2,A3,A4,B1,B2,B3,B4,B5,C1,C2,C3,C4,D1,D2,D3,E1,E2,E3,E5 stage
+    class E4 big
+    class A0,B0,C0,D0,E0 lbl
 ```
 
 | Instruction | States | Cycles |
@@ -667,43 +662,47 @@ gantt
 | HALT | IF, ID, EX, then stuck | 3 |
 | illegal opcode | IF, ID, EX, then stuck | 3 |
 
+`IDLE` is not counted — it is visited once after reset, then never again.
+
 ---
 
 ## 11. Module dependency graph
 
 ```mermaid
-flowchart TD
-    TOP["top_cpu_mc.v — TOP-LEVEL ENTITY"]
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    TOP["top_cpu_mc.v<br/>TOP-LEVEL ENTITY"]
+
+    subgraph CORECPU["The CPU"]
+        direction TB
+        CPU["cpu_top_mc.v"]
+        CTRL["control_unit_mc.v"]
+        RF["regfile.v"]
+        ALU["ALU_32_bit.v"]
+        ALUSUB["alu_1bit / alu_1Xbit<br/>full_adder / mux4x1"]
+        IMEM["imem.v"]
+        DMEM["dmem.v"]
+    end
 
     subgraph GLUE["Board glue"]
-        DEB["debounce.v — includes edge_detector"]
+        direction TB
+        DEB["debounce.v<br/>+ edge_detector"]
         SEGD["seg7_display.v"]
         SEGC["seg7_decoder.v"]
         ISSPS["5 x ISSP cores"]
     end
 
-    subgraph CORECPU["The CPU"]
-        CPU["cpu_top_mc.v"]
-        CTRL["control_unit_mc.v"]
-        RF["regfile.v"]
-        ALU["ALU_32_bit.v"]
-        ALUSUB["alu_1bit, alu_1Xbit, full_adder, mux4x1"]
-        IMEM["imem.v"]
-        DMEM["dmem.v"]
-    end
-
     subgraph LOADER["Serial loader"]
+        direction TB
         URX["uart_rx.v"]
         ULD["uart_loader.v"]
     end
 
+    TOP --> CPU
     TOP --> DEB
     TOP --> SEGD
     TOP --> ISSPS
-    TOP --> CPU
     TOP --> URX
-
-    SEGD --> SEGC
 
     CPU --> CTRL
     CPU --> RF
@@ -711,11 +710,19 @@ flowchart TD
     CPU --> IMEM
     CPU --> DMEM
     ALU --> ALUSUB
-
+    SEGD --> SEGC
     URX --> ULD
     ULD -->|"imem write port"| IMEM
+    CTRL -.->|"issues latch enables"| CPU
 
-    CTRL -.->|"holds no data — issues latch enables"| CPU
+    classDef top fill:#f3f0ff,stroke:#7048e8,color:#3b2a75,stroke-width:2px
+    classDef cpu fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef mem fill:#ebfbee,stroke:#2f9e44,color:#14532d
+    classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+    class TOP top
+    class CPU,CTRL,RF,ALU,ALUSUB cpu
+    class IMEM,DMEM mem
+    class DEB,SEGD,SEGC,ISSPS,URX,ULD io
 ```
 
 **Not in the build** (removed during the repository cleanup, recoverable from
