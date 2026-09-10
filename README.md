@@ -68,6 +68,13 @@ The large register count is dominated by the **ISSP probe shadow registers**
 | `uart_rx.v` | 8N1 UART receiver, 9600 baud @ 50 MHz |
 | `uart_loader.v` | Assembles UART bytes into 32-bit words, writes `imem` |
 
+### Documentation
+
+| File | Role |
+|---|---|
+| `README.md` | This file — full project documentation |
+| `ARCHITECTURE.md` | Architecture diagrams (board, datapath, FSM, ALU, MULT/DIV, ISSP) |
+
 ### Software
 
 | File | Role |
@@ -96,6 +103,11 @@ The large register count is dominated by the **ISSP probe shadow registers**
 ---
 
 ## 3. Architecture
+
+> Full-page [Mermaid](https://mermaid.js.org/) diagrams (board level, datapath,
+> control/status signals, FSM state diagram, ALU, MULT/DIV, clock domains, ISSP
+> probe map, instruction timing) are in **[`ARCHITECTURE.md`](ARCHITECTURE.md)**.
+> The summary below is the quick-reference version.
 
 ### 3.1 Block diagram
 
