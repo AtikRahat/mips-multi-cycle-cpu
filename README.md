@@ -6,9 +6,9 @@ A **multi-cycle MIPS softcore** written in Verilog, targeting an Altera/Intel
 data memory, a UART program loader, memory-mapped I/O, and five in-system
 source-and-probe (ISSP) debug cores for live inspection in Quartus.
 
-This project is the **multi-cycle successor** to an earlier single-cycle design
-whose files still live in the tree (`cpu_top.v`, `control_unit.v`, `top_cpu.v`)
-but are **not part of the build**.
+This project is the **multi-cycle successor** to an earlier single-cycle design.
+The single-cycle RTL and its unused ISSP cores were removed during a cleanup
+pass; they remain recoverable from git history (see §13).
 
 ---
 
@@ -72,11 +72,11 @@ The large register count is dominated by the **ISSP probe shadow registers**
 
 | File | Role |
 |---|---|
-| `assembler(1).py` | MIPS-subset assembler; emits `program.hex` + `data.hex` |
+| `assembler.py` | MIPS-subset assembler; emits `program.hex` + `data.hex` |
 | `program.hex` | Instruction image (4,096 words, zero-padded) |
 | `data.hex` | Initial data memory (32 words, zero-padded) |
 | `program(sum).hex`, `program(big_test).hex` | Alternate test programs |
-| `data(sum).hex`, `data(big_test).hex`, `data - Copy.hex` | Alternate data images |
+| `data(sum).hex`, `data(big_test).hex` | Alternate data images |
 
 ### IP cores / build artifacts
 
@@ -85,15 +85,13 @@ The large register count is dominated by the **ISSP probe shadow registers**
 | `cpu_issp_regs_lo/`, `cpu_issp_regs_hi/` | ISSP cores (480 bits each) — **active** |
 | `cpu_issp_dmem_lo/`, `cpu_issp_dmem_hi/` | ISSP cores (480 bits each) — **active** |
 | `cpu_issp_status/` | ISSP core (312 bits) — **active** |
-| `cpu_issp_lo/`, `cpu_issp_hi/`, `cpu_issp_mem/`, `cpu_issp_dmem2/`, `cpu_issp_dmem3/` | **Legacy** single-cycle ISSP cores, not in the build |
 | `output_files/` | Quartus outputs (`.sof`, reports, `.spf` probe snapshots) |
-| `db/`, `dba/`, `incremental_db/`, `incremental_dba/` | Quartus internal databases |
-| `simulation/questa/` | Generated Questa simulation netlist + `.sft` |
-| `*.v.bak` | Previous revisions of each RTL file (see §13) |
+| `db/`, `dba/`, `incremental_db/`, `incremental_dba/` | Quartus internal databases (gitignored, regenerable) |
+| `simulation/questa/` | Generated Questa simulation netlist + `.sft` (gitignored) |
 
 > There is **no `.asm` source file** checked in — only the assembled `.hex`
 > outputs. Programs must be reconstructed from `program.hex` (the default
-> program is disassembled in §12) or rewritten.
+> program is disassembled in §11) or rewritten.
 
 ---
 
@@ -410,8 +408,8 @@ SDC since they are asynchronous push-buttons.
 `seg7_display.v` time-multiplexes 4 digits using `refresh_counter[18:17]`.
 
 * **Value shown:** the low 16 bits of one of `$5`, `$6`, `$7`, `$8`, selected by
-  `KEY[1:0]` (`00`→`$5`, `01`→`$6`, `10`→`$7`, `11`→`$8`). These are the legacy
-  single-cycle test registers.
+  `KEY[1:0]` (`00`→`$5`, `01`→`$6`, `10`→`$7`, `11`→`$8`). These are the
+  registers the bundled test program uses.
 * **Decimal point:** lights on the leftmost digit when the **sticky overflow
   flag** is set.
 * **Polarity:** this board's segments and digit selects are **active-LOW**, so
@@ -442,14 +440,14 @@ ignored.
 
 ---
 
-## 8. Assembler (`assembler(1).py`)
+## 8. Assembler (`assembler.py`)
 
 A single-file Python 3 assembler with no dependencies.
 
 **Usage:**
 
 ```bash
-python3 "assembler(1).py" program.asm
+python3 assembler.py program.asm
 ```
 
 **Outputs** (written to the current directory):
@@ -502,7 +500,7 @@ loop:   BEQ  $3, $0, done     # branch:  BEQ/BNE $rs, $rt, label
 ## 9. Build & program workflow
 
 1. **Write** a program (`program.asm`).
-2. **Assemble:** `python3 "assembler(1).py" program.asm` → `program.hex`, `data.hex`.
+2. **Assemble:** `python3 assembler.py program.asm` → `program.hex`, `data.hex`.
    Ensure both files sit **in the project root** (the `$readmemh` paths are
    relative to the Quartus working directory).
 3. **Compile** in Quartus Prime (25.1std Lite): open `Mips_Multi_Cycle_Cpu.qpf`,
@@ -667,54 +665,66 @@ These were found while documenting the design and are worth cleaning up:
    code uses `pc + 7'd1` and `pc <= 7'd0`. Harmless (the result is truncated to
    12 bits by context), but misleading — these are leftovers from the 7-bit PC.
 
-6. **`control_unit.v` is a mislabeled copy.** The file currently contains an
-   older copy of `control_unit_mc` (the multi-cycle FSM), *not* the single-cycle
-   control unit. The genuine single-cycle version is preserved as
-   `control_unit.v.bak`. It is not in the build, but the naming is confusing.
-
-7. **Device is 98 % full.** Only 122 logic elements of headroom remain. Any
+6. **Device is 98 % full.** Only 122 logic elements of headroom remain. Any
    feature addition (new instruction, wider PC, extra ISSP probe) will likely
    require reclaiming logic — the ISSP probe registers are the obvious place to
    start, since the 2,232 bits of probe shadow registers plus the 32×32 register
    file dominate the 4,948 registers.
 
-8. **`dmem` is only 32 words** with a 5-bit address, and two of those addresses
+7. **`dmem` is only 32 words** with a 5-bit address, and two of those addresses
    are partly consumed by MMIO. Programs needing more storage have nowhere to
    put it.
 
-9. **No `.asm` sources checked in**, and **no version control** (the directory
-   is not a git repository — it relies on `.v.bak` files for history).
+8. **No `.asm` sources checked in.** Only the assembled `.hex` images are
+   version-controlled; the original assembly sources were never committed. The
+   default program is disassembled in §11 for reference.
 
-10. **The 7-segment display can only show `$5`–`$8`.** This is a leftover from
-    the single-cycle test program; there is no way to view an arbitrary register
-    without recompiling.
+9. **The 7-segment display can only show `$5`–`$8`.** This is a leftover from
+   the single-cycle test program; there is no way to view an arbitrary register
+   without recompiling.
 
 ---
 
-## 13. Design history (from `.bak` files)
+## 13. Design history
 
-The `.bak` files document the project's evolution:
+The old `.v.bak` snapshots and the single-cycle sources were removed during the
+repository cleanup. They are **not lost** — they still exist in git history, in
+the baseline commit `c64214a` ("Baseline: state before cleanup"). To recover any
+of them:
 
-| File | Change stored in `.bak` |
-|---|---|
-| `control_unit_mc.v.bak` | Pre-auto-run FSM: every instruction returned to `IDLE`, so one `KEY[2]` press ran one instruction |
-| `cpu_top_mc.v.bak` | Datapath before the MULT/DIV, HI/LO, and MMIO additions |
-| `top_cpu_mc.v.bak` | Top level with the old 5-probe layout (`probe_bus_lo` = PC + `$1`–`$15`, etc.) |
-| `control_unit.v.bak` | The original **single-cycle** control unit (with LW/SW support) |
-| `imem.v.bak` | Version loading instructions from a hand-written `case` statement before `$readmemh` |
-| `ALU_32_bit.v.bak` | ALU before the `Ov` port was exposed |
-| `uart_loader.v.bak`, `uart_rx.v.bak`, `regfile.v.bak`, `dmem.v.bak` | Earlier revisions of the corresponding modules |
+```bash
+git show c64214a:control_unit.v.bak      # view a single file
+git checkout c64214a -- top_cpu.v        # restore it into the working tree
+```
 
-**Evolution in brief:** single-cycle core → multi-cycle datapath with an FSM →
-auto-run mode (one press = whole program) → MULT/DIV, MFHI/MFLO, JAL, HALT,
-sticky overflow and illegal-opcode flags → memory-mapped I/O and a UART loader.
+The design evolved in five stages:
+
+1. **Single-cycle core.** Every instruction completed in one clock via a purely
+   combinational control unit (`control_unit.v`, `cpu_top.v`, `top_cpu.v`). The
+   PC was 7 bits (128 instructions). Memory was initialized from a hand-written
+   `case` statement in `imem.v`.
+2. **Multi-cycle datapath.** Replaced by an FSM-driven datapath
+   (`control_unit_mc.v`, `cpu_top_mc.v`) with intermediate registers
+   (`ir_reg`, `a_reg`, `b_reg`, …) reused across cycles. Each instruction ended
+   back in `IDLE`. The ALU gained the `Ov` output for signed overflow.
+3. **Auto-run mode.** Instructions began returning to `IF` instead of `IDLE`, so
+   one `KEY[2]` press runs the whole program; `IDLE` became a one-time entry
+   state. The PC widened to 12 bits (4,096 instructions) and the ISSP probes were
+   reorganized into the current 5-core, 480/312-bit layout.
+4. **Instruction-set growth.** Added `MULT`/`DIV` (shared 32-cycle shift-add /
+   restoring-division loop), `MFHI`/`MFLO`, `JAL`, `HALT`, and the sticky
+   `overflow` / `illegal_opcode` flags; `TRAP` was introduced for unrecognized
+   instructions.
+5. **I/O and tooling.** Memory-mapped I/O (button at address 30, LEDs at 31), a
+   9600-baud UART program loader, and finally the cleanup that removed the
+   single-cycle legacy files, `.bak` snapshots, and duplicate artifacts.
 
 ---
 
 ## 14. Quick reference
 
 ```
-Assemble:   python3 "assembler(1).py" program.asm
+Assemble:   python3 assembler.py program.asm
 Build:      quartus_sh --flow compile Mips_Multi_Cycle_Cpu   (or use the Quartus GUI)
 Program:    output_files/Mips_Multi_Cycle_Cpu.sof via JTAG
 Run:        KEY[2]   (one press = whole program)
