@@ -1,0 +1,27 @@
+//====================================================================
+// imem.v  (updated: loads instructions from an external file instead
+// of a hand/copy-pasted case statement)
+//
+// Reads program.hex at compile time - a plain text file, one 32-bit
+// hex instruction per line, no prefixes/suffixes. The assembler now
+// writes this file directly, so this file itself never needs manual
+// editing again - just re-run the assembler and recompile.
+//
+// IMPORTANT: program.hex must sit in the same folder as this
+// Quartus project (the .qpf/.qsf file's folder), since Quartus
+// resolves this relative path against the project directory.
+//====================================================================
+
+module imem (
+    input  [6:0]  addr,
+    output [31:0] instruction
+);
+    reg [31:0] mem [0:127];   // 128 words = matches the 7-bit address
+
+    initial begin
+        $readmemh("program.hex", mem);
+    end
+
+    assign instruction = mem[addr];
+
+endmodule

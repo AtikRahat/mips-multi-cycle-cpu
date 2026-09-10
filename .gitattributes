@@ -1,0 +1,3 @@
+# Never rewrite line endings - keeps .hex images byte-exact for $readmemh
+# and avoids churn on Quartus-generated files.
+* -text

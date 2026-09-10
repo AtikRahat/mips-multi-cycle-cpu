@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(for f in \"program(sum).hex\" \"program(big_test).hex\" \"data(sum).hex\" \"data(big_test).hex\" \"data - Copy.hex\"; do echo \"=== $f ===\"; head -20 \"$f\"; echo \"... lines: $(wc -l < \"$f\")\"; done)",
+      "Shell(for f in ALU_32_bit.v.bak control_unit_unit.v.bak control_unit_mc.v.bak cpu_top_mc.v.bak dmem.v.bak imem.v.bak regfile.v.bak uart_loader.v.bak uart_rx.v.bak top_cpu_mc.v.bak control_unit.v.bak; do if [ -f \"$f\" ]; then echo \"=== $f ($(wc -l < \"$f\") lines) ===\"; head -12 \"$f\"; fi; done)",
+      "powershell",
+      "Shell(git:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

@@ -1,0 +1,224 @@
+//====================================================================
+// cpu_top_mc.v  (multi-cycle datapath)
+//
+// Same idea as cpu_top.v, but the datapath is now reused across
+// several clock cycles per instruction instead of doing everything
+// in one shot. The extra registers below (ir_reg, pc_plus1_reg, a_reg,
+// b_reg, branch_target_reg, alu_out_reg, mdr_reg) are what let the
+// datapath "remember" values between cycles - control_unit_mc.v
+// decides which of these load on any given clock edge.
+//
+// KEY[2] behavior: one press = one full instruction (all its internal
+// cycles run back-to-back on CLOCK_50 without further button presses).
+//====================================================================
+
+module cpu_top_mc (
+    input        clk,
+    input        start,     // one-cycle pulse: begin next instruction
+
+    // debug: architectural registers (same names/shape as cpu_top.v)
+    output [31:0] debug_reg1,  output [31:0] debug_reg2,  output [31:0] debug_reg3,
+    output [31:0] debug_reg4,  output [31:0] debug_reg5,  output [31:0] debug_reg6,
+    output [31:0] debug_reg7,  output [31:0] debug_reg8,  output [31:0] debug_reg9,
+    output [31:0] debug_reg10, output [31:0] debug_reg11, output [31:0] debug_reg12,
+    output [31:0] debug_reg13, output [31:0] debug_reg14, output [31:0] debug_reg15,
+    output [31:0] debug_reg16, output [31:0] debug_reg17, output [31:0] debug_reg18,
+    output [31:0] debug_reg19, output [31:0] debug_reg20, output [31:0] debug_reg21,
+    output [31:0] debug_reg22, output [31:0] debug_reg23, output [31:0] debug_reg24,
+    output [31:0] debug_reg25, output [31:0] debug_reg26, output [31:0] debug_reg27,
+    output [31:0] debug_reg28, output [31:0] debug_reg29, output [31:0] debug_reg30,
+    output [31:0] debug_reg31,
+    output [6:0]  debug_pc,
+
+    output [31:0] debug_instruction,
+    output [4:0]  debug_dmem_addr,
+    output [31:0] debug_dmem_write_data,
+    output        debug_dmem_write_enable,
+    output [31:0] debug_dmem_read_data,
+    output [31:0] debug_dmem0,  output [31:0] debug_dmem1,  output [31:0] debug_dmem2,
+    output [31:0] debug_dmem3,  output [31:0] debug_dmem4,  output [31:0] debug_dmem5,
+    output [31:0] debug_dmem6,  output [31:0] debug_dmem7,  output [31:0] debug_dmem8,
+    output [31:0] debug_dmem9,  output [31:0] debug_dmem10, output [31:0] debug_dmem11,
+    output [31:0] debug_dmem12, output [31:0] debug_dmem13, output [31:0] debug_dmem14,
+    output [31:0] debug_dmem15, output [31:0] debug_dmem16, output [31:0] debug_dmem17,
+    output [31:0] debug_dmem18, output [31:0] debug_dmem19, output [31:0] debug_dmem20,
+    output [31:0] debug_dmem21, output [31:0] debug_dmem22, output [31:0] debug_dmem23,
+    output [31:0] debug_dmem24, output [31:0] debug_dmem25, output [31:0] debug_dmem26,
+    output [31:0] debug_dmem27, output [31:0] debug_dmem28, output [31:0] debug_dmem29,
+    output [31:0] debug_dmem30, output [31:0] debug_dmem31,
+
+    // NEW: which FSM state we're in right now - useful to watch on
+    // an ISSP while debugging, doesn't exist in the single-cycle design
+    output [2:0]  debug_state
+);
+
+    //----------------------------------------------------------------
+    // The "always-there" architectural PC. Frozen throughout
+    // IF/ID/MEM/WB - only ever changes during the EX cycle.
+    //----------------------------------------------------------------
+    reg [6:0] pc = 7'd0;
+
+    //----------------------------------------------------------------
+    // Cross-cycle storage registers (the new part vs. single-cycle)
+    //----------------------------------------------------------------
+    reg [31:0] ir_reg;             // latched instruction
+    reg [6:0]  pc_plus1_reg;       // PC+1 at fetch time (return addr / fallthrough)
+    reg [31:0] a_reg, b_reg;       // latched register-file read values
+    reg [6:0]  branch_target_reg;  // PC+1 + imm, computed in ID
+    reg [31:0] alu_out_reg;        // latched ALU result (address or arithmetic result)
+    reg [31:0] mdr_reg;            // latched memory read data
+
+    //----------------------------------------------------------------
+    // Instruction memory - only read during IF, address = pc (frozen
+    // for the rest of the instruction, so this is safe to read anytime)
+    //----------------------------------------------------------------
+    wire [31:0] imem_instruction;
+    imem instr_mem (.addr(pc), .instruction(imem_instruction));
+
+    //----------------------------------------------------------------
+    // Field decode - done off the LATCHED ir_reg, since combinational
+    // decode off imem_instruction would only be valid during IF, but
+    // we need these fields all the way through ID/EX/MEM/WB
+    //----------------------------------------------------------------
+    wire [5:0]  opcode  = ir_reg[31:26];
+    wire [4:0]  rs      = ir_reg[25:21];
+    wire [4:0]  rt      = ir_reg[20:16];
+    wire [4:0]  rd      = ir_reg[15:11];
+    wire [5:0]  funct   = ir_reg[5:0];
+    wire [15:0] imm16   = ir_reg[15:0];
+    wire [31:0] imm_sext = {{16{imm16[15]}}, imm16};
+    wire [6:0]  jump_target = ir_reg[6:0]; // JAL literal address (128-word imem)
+
+    //----------------------------------------------------------------
+    // Control FSM
+    //----------------------------------------------------------------
+    wire [2:0] state;
+    wire ir_write, pc_plus1_write, ab_write, branch_target_write;
+    wire alu_out_write, pc_write, mdr_write;
+    wire [3:0] alu_op;
+    wire alu_src;
+    wire [1:0] pc_source;
+    wire reg_write;
+    wire [1:0] reg_dst;
+    wire mem_to_reg;
+    wire dmem_write;
+    wire regs_equal = (a_reg == b_reg);
+
+    control_unit_mc ctrl (
+        .clk(clk), .start(start), .ir(ir_reg), .regs_equal(regs_equal),
+        .state(state),
+        .ir_write(ir_write), .pc_plus1_write(pc_plus1_write),
+        .ab_write(ab_write), .branch_target_write(branch_target_write),
+        .alu_out_write(alu_out_write), .pc_write(pc_write), .mdr_write(mdr_write),
+        .alu_op(alu_op), .alu_src(alu_src), .pc_source(pc_source),
+        .reg_write(reg_write), .reg_dst(reg_dst), .mem_to_reg(mem_to_reg),
+        .dmem_write(dmem_write)
+    );
+
+    //----------------------------------------------------------------
+    // Register file
+    //----------------------------------------------------------------
+    wire [31:0] rf_read_data1, rf_read_data2;
+    wire [4:0]  write_reg = (reg_dst == 2'd2) ? 5'd31 :
+                             (reg_dst == 2'd1) ? rt   : rd;
+    wire [31:0] write_data = (reg_dst == 2'd2) ? {25'b0, pc_plus1_reg} : // JAL: $31 = return addr
+                              mem_to_reg          ? mdr_reg            : // LW: from memory
+                                                     alu_out_reg;         // R-type/ADDI: from ALU
+
+    regfile rf (
+        .clk(clk),
+        .read_reg1(rs), .read_reg2(rt),
+        .write_reg(write_reg), .write_data(write_data),
+        .write_enable(reg_write),
+        .read_data1(rf_read_data1), .read_data2(rf_read_data2),
+        .dbg_r1(debug_reg1), .dbg_r2(debug_reg2), .dbg_r3(debug_reg3), .dbg_r4(debug_reg4),
+        .dbg_r5(debug_reg5), .dbg_r6(debug_reg6), .dbg_r7(debug_reg7), .dbg_r8(debug_reg8),
+        .dbg_r9(debug_reg9), .dbg_r10(debug_reg10), .dbg_r11(debug_reg11), .dbg_r12(debug_reg12),
+        .dbg_r13(debug_reg13), .dbg_r14(debug_reg14), .dbg_r15(debug_reg15), .dbg_r16(debug_reg16),
+        .dbg_r17(debug_reg17), .dbg_r18(debug_reg18), .dbg_r19(debug_reg19), .dbg_r20(debug_reg20),
+        .dbg_r21(debug_reg21), .dbg_r22(debug_reg22), .dbg_r23(debug_reg23), .dbg_r24(debug_reg24),
+        .dbg_r25(debug_reg25), .dbg_r26(debug_reg26), .dbg_r27(debug_reg27), .dbg_r28(debug_reg28),
+        .dbg_r29(debug_reg29), .dbg_r30(debug_reg30), .dbg_r31(debug_reg31)
+    );
+
+    //----------------------------------------------------------------
+    // ALU - operand A is always a_reg; operand B is either b_reg
+    // (R-type) or the sign-extended immediate (ADDI/LW/SW address calc)
+    //----------------------------------------------------------------
+    wire [31:0] alu_b = alu_src ? imm_sext : b_reg;
+    wire [31:0] alu_result;
+    wire        alu_cout;
+    ALU_32_bit alu (
+        .A(a_reg), .B(alu_b), .Op(alu_op),
+        .Result(alu_result), .Cout(alu_cout)
+    );
+
+    //----------------------------------------------------------------
+    // Data memory - address/write-data come from the registers that
+    // hold them by the time MEM state is reached
+    //----------------------------------------------------------------
+    wire [31:0] dmem_read_data;
+    dmem data_mem (
+        .clk(clk),
+        .addr(alu_out_reg[4:0]),
+        .write_data(b_reg),
+        .write_enable(dmem_write),
+        .read_data(dmem_read_data),
+        .dbg_mem0(debug_dmem0), .dbg_mem1(debug_dmem1), .dbg_mem2(debug_dmem2), .dbg_mem3(debug_dmem3),
+        .dbg_mem4(debug_dmem4), .dbg_mem5(debug_dmem5), .dbg_mem6(debug_dmem6), .dbg_mem7(debug_dmem7),
+        .dbg_mem8(debug_dmem8), .dbg_mem9(debug_dmem9), .dbg_mem10(debug_dmem10), .dbg_mem11(debug_dmem11),
+        .dbg_mem12(debug_dmem12), .dbg_mem13(debug_dmem13), .dbg_mem14(debug_dmem14), .dbg_mem15(debug_dmem15),
+        .dbg_mem16(debug_dmem16), .dbg_mem17(debug_dmem17), .dbg_mem18(debug_dmem18), .dbg_mem19(debug_dmem19),
+        .dbg_mem20(debug_dmem20), .dbg_mem21(debug_dmem21), .dbg_mem22(debug_dmem22), .dbg_mem23(debug_dmem23),
+        .dbg_mem24(debug_dmem24), .dbg_mem25(debug_dmem25), .dbg_mem26(debug_dmem26), .dbg_mem27(debug_dmem27),
+        .dbg_mem28(debug_dmem28), .dbg_mem29(debug_dmem29), .dbg_mem30(debug_dmem30), .dbg_mem31(debug_dmem31)
+    );
+
+    assign debug_instruction       = ir_reg;
+    assign debug_dmem_addr         = alu_out_reg[4:0];
+    assign debug_dmem_write_data   = b_reg;
+    assign debug_dmem_write_enable = dmem_write;
+    assign debug_dmem_read_data    = dmem_read_data;
+    assign debug_state             = state;
+
+    //----------------------------------------------------------------
+    // PC next-value mux (only sampled when pc_write is asserted, i.e.
+    // during EX)
+    //----------------------------------------------------------------
+    wire [6:0] pc_next = (pc_source == 2'd0) ? pc_plus1_reg :
+                          (pc_source == 2'd1) ? branch_target_reg :
+                          (pc_source == 2'd2) ? jump_target :
+                                                 a_reg[6:0]; // JR
+
+    //----------------------------------------------------------------
+    // All the cross-cycle register updates, gated by the FSM's
+    // latch-enable pulses
+    //----------------------------------------------------------------
+    always @(posedge clk) begin
+        if (ir_write)
+            ir_reg <= imem_instruction;
+
+        if (pc_plus1_write)
+            pc_plus1_reg <= pc + 7'd1;
+
+        if (ab_write) begin
+            a_reg <= rf_read_data1;
+            b_reg <= rf_read_data2;
+        end
+
+        if (branch_target_write)
+            branch_target_reg <= pc_plus1_reg + imm_sext[6:0];
+
+        if (alu_out_write)
+            alu_out_reg <= alu_result;
+
+        if (mdr_write)
+            mdr_reg <= dmem_read_data;
+
+        if (pc_write)
+            pc <= pc_next;
+    end
+
+    assign debug_pc = pc;
+
+endmodule

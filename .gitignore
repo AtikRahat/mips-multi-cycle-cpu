@@ -1,0 +1,23 @@
+# Quartus build artifacts (regenerable)
+db/
+dba/
+incremental_db/
+incremental_dba/
+simulation/
+*.qws
+output_files/*.rpt
+output_files/*.summary
+output_files/*.pin
+output_files/*.qmsg
+output_files/*.done
+output_files/*.jdi
+output_files/*.jditmp
+output_files/*.sld
+output_files/*.smsg
+output_files/*.cdf
+output_files/*.sft
+output_files/*.vo
+*.sopcinfo
+.qsys_edit/*.nlf
+.qsys_edit/*_schematic.nlv
+*~
