@@ -12,8 +12,8 @@
 //     all 32 registers to 0 - same reset signal that already zeroes
 //     the PC and sticky flags in control_unit_mc.v/cpu_top_mc.v
 //
-// Registers $1 and $2 are pre-loaded with test values (12 and 10),
-// and $4 with 3, at startup via the CPU's boot sequence.
+// Registers start at 0 (and are cleared to 0 by rst); programs are
+// responsible for initialising the registers they use.
 //====================================================================
 
 module regfile (

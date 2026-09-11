@@ -104,6 +104,8 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVCMOS" -to LEDG[1]
 set_instance_assignment -name IO_STANDARD "3.3-V LVCMOS" -to LEDG[2]
 set_instance_assignment -name IO_STANDARD "3.3-V LVCMOS" -to LEDG[3]
 set_instance_assignment -name IO_STANDARD "3.3-V LVCMOS" -to KEY[4]
+set_location_assignment PIN_115 -to UART_RXD
+set_instance_assignment -name IO_STANDARD "3.3-V LVCMOS" -to UART_RXD
 set_global_assignment -name QIP_FILE cpu_issp_status/synthesis/cpu_issp_status.qip
 set_global_assignment -name QIP_FILE cpu_issp_regs_lo/synthesis/cpu_issp_regs_lo.qip
 set_global_assignment -name QIP_FILE cpu_issp_regs_hi/synthesis/cpu_issp_regs_hi.qip
@@ -125,6 +127,10 @@ set_global_assignment -name VERILOG_FILE debounce.v
 set_global_assignment -name VERILOG_FILE ALU_32_bit.v
 set_global_assignment -name VERILOG_FILE uart_rx.v
 set_global_assignment -name VERILOG_FILE uart_loader.v
+# Full-debug build: uncomment to keep the 5 ISSP probe cores. They cost enough
+# logic that the design no longer fits on the EP4CE6 once the display register
+# select is added, so this is OFF by default; the .spf snapshots require it.
+# set_global_assignment -name VERILOG_MACRO "CPU_ISSP=1"
 set_global_assignment -name SOURCE_FILE "output_files/new view.spf"
 set_global_assignment -name SOURCE_FILE "output_files/Brand_New_Spf_For_Multi_Cycle_Cpu_(Manual).spf"
 

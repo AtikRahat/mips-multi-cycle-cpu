@@ -8,8 +8,9 @@
 // datapath "remember" values between cycles - control_unit_mc.v
 // decides which of these load on any given clock edge.
 //
-// KEY[2] behavior: one press = one full instruction (all its internal
-// cycles run back-to-back on CLOCK_50 without further button presses).
+// KEY[2] behavior: one press runs the WHOLE program - the FSM auto-runs
+// IF/ID/EX/MEM/WB/... back-to-back on clk until HALT or TRAP, with no
+// further button presses.
 //====================================================================
 
 module cpu_top_mc (
@@ -66,8 +67,8 @@ module cpu_top_mc (
     output [31:0] debug_hi,
     output [31:0] debug_lo,
 
-    // NEW: memory-mapped I/O. addr 30 (read) = the spare button,
-    // addr 31 (write) = the 4 LEDs. Both are board-agnostic here -
+    // NEW: memory-mapped I/O. addr 510 (read) = the spare button,
+    // addr 511 (write) = the 4 LEDs. Both are board-agnostic here -
     // top_cpu_mc.v maps them to actual KEY[4]/LEDG[] pins.
     input         mmio_btn_in,
     output [3:0]  mmio_led_out,
@@ -216,13 +217,14 @@ module cpu_top_mc (
     // Data memory - address/write-data come from the registers that
     // hold them by the time MEM state is reached
     //----------------------------------------------------------------
-    // NEW: memory-mapped I/O address decode. Addresses 30/31 are
-    // intercepted here, BEFORE reaching the real dmem module - dmem.v
-    // itself is untouched, still just a plain 32-word memory, same as
-    // it's always been. This keeps the already-verified memory module
-    // pristine and puts all the new logic in this one place.
-    wire is_led_addr = (alu_out_reg[4:0] == 5'd31); // SW here -> LEDs, not real memory
-    wire is_btn_addr  = (alu_out_reg[4:0] == 5'd30); // LW here -> button, not real memory
+    // NEW: memory-mapped I/O address decode. The top two addresses
+    // (510/511) are intercepted here, BEFORE reaching the real dmem
+    // module - dmem.v itself stays a plain memory. The rest of the
+    // 512-word space is ordinary data memory. This keeps the
+    // already-verified memory module pristine and puts all the new
+    // logic in this one place.
+    wire is_led_addr = (alu_out_reg[8:0] == 9'd511); // SW here -> LEDs, not real memory
+    wire is_btn_addr  = (alu_out_reg[8:0] == 9'd510); // LW here -> button, not real memory
 
     wire real_dmem_write = dmem_write && !is_led_addr; // suppress the real write for the LED address
 
@@ -231,7 +233,7 @@ module cpu_top_mc (
 
     dmem data_mem (
         .clk(clk),
-        .addr(alu_out_reg[4:0]),
+        .addr(alu_out_reg[8:0]),
         .write_data(b_reg),
         .write_enable(real_dmem_write),
         .read_data(dmem_read_data_raw),
@@ -246,7 +248,7 @@ module cpu_top_mc (
     );
 
     assign debug_instruction       = ir_reg;
-    assign debug_dmem_addr         = alu_out_reg[4:0];
+    assign debug_dmem_addr         = alu_out_reg[4:0]; // low 5 bits only, so the ISSP status probe stays 312 bits
     assign debug_dmem_write_data   = b_reg;
     assign debug_dmem_write_enable = dmem_write;
     assign debug_dmem_read_data    = dmem_read_data;
@@ -318,7 +320,7 @@ module cpu_top_mc (
             ir_reg <= imem_instruction;
 
         if (pc_plus1_write)
-            pc_plus1_reg <= pc + 7'd1;
+            pc_plus1_reg <= pc + 12'd1;
 
         if (ab_write) begin
             a_reg <= rf_read_data1;
@@ -366,7 +368,7 @@ module cpu_top_mc (
         btn_sync2 <= btn_sync1;
 
         if (rst)
-            pc <= 7'd0;       // NEW: reset returns PC to the start of the program
+            pc <= 12'd0;       // NEW: reset returns PC to the start of the program
         else if (pc_write)
             pc <= pc_next;
     end

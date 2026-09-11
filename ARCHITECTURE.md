@@ -10,12 +10,18 @@ written in `top_cpu_mc.v`, `cpu_top_mc.v`, `control_unit_mc.v`, `ALU_32_bit.v`,
 > registered. In a plain text viewer you will see the Mermaid source instead of
 > a picture.
 >
-> ⚠️ **Renderer note.** The flowcharts use the ELK layout engine for orthogonal,
-> untangled edges. GitHub's built-in Mermaid renderer does **not** bundle ELK, so
-> on GitHub these may fall back to the default layout or fail to render. If you
-> need them guaranteed, view the pre-rendered PNGs in
-> [`docs/diagrams/`](docs/diagrams/). The two state diagrams are unaffected (ELK
-> applies to flowcharts only).
+> ⚠️ **Renderer note.** Every diagram below uses the ELK layout engine for
+> orthogonal, untangled edges. GitHub's built-in Mermaid renderer does **not**
+> bundle ELK, so on GitHub these may fall back to the default layout or fail to
+> render. If you need them guaranteed, view the pre-rendered PNGs in
+> [`docs/diagrams/`](docs/diagrams/).
+>
+> Mermaid has **no ELK backend for `stateDiagram-v2`** — a `layout: "elk"`
+> directive there is silently ignored (as is an invalid layout name). The control
+> FSM (§6.2) and instruction lifecycle (§3) are therefore drawn as
+> **flowcharts**, which do support ELK. Where those diagrams have a loop, the
+> back-edge is folded into a single "back to IF" node so the graph stays acyclic
+> and ELK can layer it in execution order.
 >
 > **Colour key** — orange = storage, blue = compute, green = memory,
 > purple = control, grey = clock/reset, red = I/O.
@@ -111,8 +117,8 @@ flowchart LR
     BMUX{"B mux<br/>alu_src"}
     ALU["ALU_32_bit.v"]
     AO["alu_out_reg"]
-    MMIO["MMIO decode<br/>addr 30 / 31"]
-    DM["dmem.v<br/>32 x 32"]
+    MMIO["MMIO decode<br/>addr 510 / 511"]
+    DM["dmem.v<br/>512 x 32"]
     MDR["mdr_reg"]
     MD["MULT / DIV<br/>HI / LO"]
     WBMUX{"writeback mux<br/>wb_sel, reg_dst"}
@@ -132,7 +138,7 @@ flowchart LR
     BMUX -->|alu_b| ALU
     ALU -->|Result| AO
 
-    AO -->|"addr bits 4:0"| MMIO
+    AO -->|"addr bits 8:0"| MMIO
     MMIO -->|"real access"| DM
     B -->|write data| DM
     DM -->|read data| MDR
@@ -223,25 +229,35 @@ The normal execution path — one shared datapath, reused 3–5 times per
 instruction. The complete FSM, including `TRAP` and `HALT`, is in §6.2.
 
 ```mermaid
-stateDiagram-v2
-    direction LR
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart LR
+    IDLE["IDLE"] -->|start pulse| IF["IF"]
+    IF --> ID["ID"]
+    ID --> EX["EX"]
 
-    [*] --> IDLE
-    IDLE --> IF : start pulse
-    IF --> ID
-    ID --> EX
+    EX -->|"R-type, ADDI,<br/>MFHI, MFLO"| WB["WB"]
+    EX -->|"LW / SW"| MEM["MEM"]
+    EX -->|"BEQ, BNE,<br/>JR, JAL"| NEXT
 
-    EX --> WB : R-type, ADDI, MFHI, MFLO
-    EX --> MEM : LW, SW
-    EX --> IF : BEQ, BNE, JR, JAL
+    MEM -->|LW| WB
+    MEM -->|SW| NEXT
+    WB -->|auto-run| NEXT
 
-    MEM --> WB : LW
-    MEM --> IF : SW
+    NEXT(["back to IF<br/>auto-run"])
 
-    WB --> IF : auto-run
+    classDef stage fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef idle fill:#f3f0ff,stroke:#7048e8,color:#3b2a75
+    classDef hub fill:#f3f0ff,stroke:#7048e8,color:#3b2a75,stroke-width:2px
+
+    class IDLE idle
+    class IF,ID,EX,MEM,WB stage
+    class NEXT hub
 ```
 
-`rst` returns the FSM to `IDLE` from any state.
+`rst` returns the FSM to `IDLE` from any state. The three terminal states — `WB`,
+`MEM` after an `SW`, and `EX` for the branches and jumps — all converge on the
+same `back to IF` node, which is what makes a single `KEY[2]` press run the
+entire program.
 
 ---
 
@@ -392,31 +408,50 @@ MIPS. `HI` and `LO` are read back through the write-back mux by `MFHI`
 ### 6.2 State diagram
 
 ```mermaid
-stateDiagram-v2
-    direction TB
+%%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
+flowchart TB
+    RST(["rst"]) --> IDLE
 
-    [*] --> IDLE
-    IDLE --> IF : start
+    IDLE["IDLE"] -->|start| IF["IF"]
     IF --> ID
     ID --> EX
 
-    EX --> TRAP : illegal
-    EX --> HALT : HALT instr
-    EX --> MD_LOOP : MULT / DIV
-    EX --> MEM : LW / SW
-    EX --> WB : R-type, ADDI,<br/>MFHI, MFLO
-    EX --> IF : BEQ, BNE,<br/>JR, JAL
+    EX -->|"R-type, ADDI,<br/>MFHI, MFLO"| WB["WB"]
+    EX -->|"LW / SW"| MEM["MEM"]
+    EX -->|"MULT / DIV"| MD_LOOP["MD_LOOP"]
+    EX -->|"BEQ, BNE,<br/>JR, JAL"| NEXT
+    EX -->|"HALT instr"| HALT["HALT"]
+    EX -->|illegal| TRAP["TRAP"]
 
-    MEM --> WB : LW
-    MEM --> IF : SW
-    WB --> IF
+    MEM -->|LW| WB
+    MEM -->|SW| NEXT
 
-    MD_LOOP --> MD_DONE : counter = 31
-    MD_DONE --> IF
+    MD_LOOP -->|"counter = 31"| MD_DONE["MD_DONE"]
+    MD_DONE --> NEXT
+
+    WB -->|auto-run| NEXT
+
+    NEXT(["back to IF<br/>auto-run: one press runs the whole program"])
 
     TRAP --> TRAP
     HALT --> HALT
+
+    classDef pipe fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef md fill:#fff4e6,stroke:#e8890c,color:#7a3d00
+    classDef abs fill:#fff5f5,stroke:#e03131,color:#7d1a1a
+    classDef hub fill:#f3f0ff,stroke:#7048e8,color:#3b2a75,stroke-width:2px
+
+    class IDLE,IF,ID,EX,MEM,WB pipe
+    class MD_LOOP,MD_DONE md
+    class TRAP,HALT abs
+    class NEXT hub
 ```
+
+Every edge above is one row of the §6.1 table, with `md_counter_done` written out
+as `counter = 31`. The `back to IF` node collapses the five transitions into
+`IF` (`WB`, `MD_DONE`, `MEM` on `SW`, and `EX` on the branches/jumps) into a
+single rail, which both matches the "auto-run" behaviour and keeps the graph
+acyclic so ELK can lay it out in execution order.
 
 **Auto-run.** Every instruction returns to `IF`, not `IDLE`. `IDLE` is entered
 only once, after reset, so a single `KEY[2]` press runs the entire program.
@@ -452,18 +487,18 @@ permanent — only `rst` leaves them. The sticky `illegal_opcode` flag latches w
 
 ## 7. Memory map and MMIO decode
 
-`dmem` keeps a 5-bit address, so only the low 5 bits of a computed address are
-used. Two addresses are intercepted **before** reaching `dmem.v`, leaving that
-module completely unmodified.
+`dmem` keeps a 9-bit address, so the low 9 bits of a computed address select the
+word from the 512-word space. Two addresses are intercepted **before** reaching
+`dmem.v`, leaving that module completely unmodified.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 flowchart LR
-    ADDR["alu_out_reg[4:0]"]
-    DM["dmem.v<br/>32 x 32"]
+    ADDR["alu_out_reg[8:0]"]
+    DM["dmem.v<br/>512 x 32"]
 
-    ADDR -->|"== 31"| LEDA["is_led_addr"]
-    ADDR -->|"== 30"| BTNA["is_btn_addr"]
+    ADDR -->|"== 511"| LEDA["is_led_addr"]
+    ADDR -->|"== 510"| BTNA["is_btn_addr"]
     ADDR -->|otherwise| DM
 
     LEDA -->|"on SW"| LED["led_reg = b_reg[3:0]<br/>real write suppressed"]
@@ -481,11 +516,11 @@ flowchart LR
 
 | Address | `LW` | `SW` |
 |---|---|---|
-| `0`–`29` | ordinary `dmem` read | ordinary `dmem` write |
-| `30` | **MMIO** → `{31'b0, KEY[4]}` | ordinary write to `mem[30]` |
-| `31` | ordinary read of `mem[31]` | **MMIO** → `led_reg[3:0]` |
+| `0`–`509` | ordinary `dmem` read | ordinary `dmem` write |
+| `510` | **MMIO** → `{31'b0, KEY[4]}` | ordinary write to `mem[510]` |
+| `511` | ordinary read of `mem[511]` | **MMIO** → `led_reg[3:0]` |
 
-The asymmetry means `mem[30]` is unreachable via `LW` and `mem[31]` unreachable
+The asymmetry means `mem[510]` is unreachable via `LW` and `mem[511]` unreachable
 via `SW`, but each stays reachable in the other direction.
 
 The button input passes through a 2-FF synchronizer (`btn_sync1` / `btn_sync2`)
@@ -548,6 +583,10 @@ guarantees a pulse a full `cpu_clk` period wide.
 
 Five `altera_in_system_sources_probes` cores, clocked from the JTAG domain.
 Word *n* within an instance occupies bits `[32n+31 : 32n]`, with no gaps.
+
+> The whole probe section is compile-time optional (the `CPU_ISSP` macro in the
+> `.qsf`). It ships disabled because the probes plus the display register select
+> exceed the device's logic.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%

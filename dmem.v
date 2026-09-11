@@ -1,14 +1,18 @@
 //====================================================================
-// dmem.v  (full 32-word debug visibility + data.hex initial load)
-// Data memory - a separate block of 32 storage words, distinct from
+// dmem.v  (512-word data memory + debug visibility for words 0..31)
+// Data memory - a separate block of 512 storage words, distinct from
 // the register file. This is what SW writes into and LW reads from.
+// 512 x 32 bits = 2 M9K blocks (one more than the old 32-word memory),
+// well inside the EP4CE6's 30-block budget.
 //
 // Reads happen instantly (combinational) - same idea as the register
 // file's read ports. Writes only happen on a clock edge, and only
 // when write_enable is asserted.
 //
-// Every one of the 32 words has a debug output, so the full memory
-// can be viewed live via ISSP - same idea as regfile.v's dbg_r1..dbg_r31.
+// The first 32 words each have a debug output, so the low part of the
+// memory can be viewed live via ISSP - same idea as regfile.v's
+// dbg_r1..dbg_r31. Keeping the count at 32 leaves the ISSP cores
+// untouched. (Words 510/511 are intercepted as MMIO in cpu_top_mc.v.)
 //
 // mem[] is also given an initial value from data.hex (written by the
 // assembler's .data section) at synthesis time, the same way imem.v
@@ -18,7 +22,7 @@
 
 module dmem (
     input         clk,
-    input  [4:0]  addr,
+    input  [8:0]  addr,
     input  [31:0] write_data,
     input         write_enable,
     output [31:0] read_data,
@@ -56,7 +60,7 @@ module dmem (
     output [31:0] dbg_mem30,
     output [31:0] dbg_mem31
 );
-    reg [31:0] mem [0:31];
+    reg [31:0] mem [0:511];
 
     initial $readmemh("data.hex", mem);
 

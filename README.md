@@ -26,22 +26,30 @@ pass; they remain recoverable from git history (see §13).
 
 ### Current fit (last successful compile)
 
-From `output_files/Mips_Multi_Cycle_Cpu.fit.summary`:
+From `output_files/Mips_Multi_Cycle_Cpu.fit.summary` — this is the **default
+build**, i.e. with the ISSP probes compiled out (`CPU_ISSP` unset, see §10):
 
 | Resource | Usage |
 |---|---|
-| Total logic elements | **6,150 / 6,272 (98 %)** |
-| Combinational functions | 5,341 / 6,272 (85 %) |
-| Dedicated logic registers | 4,948 / 6,272 (79 %) |
-| Memory bits | 131,968 / 276,480 (48 %) |
+| Total logic elements | **5,790 / 6,272 (92 %)** |
+| Combinational functions | 4,989 / 6,272 (80 %) |
+| Dedicated logic registers | 3,654 / 6,272 (58 %) |
+| Memory bits | 145,408 / 276,480 (53 %) |
 | Pins | 23 / 92 (25 %) |
 | Embedded multipliers | 0 / 30 |
 | PLLs | 0 / 2 |
 
-Timing (`sta.summary`): setup slack on `clk` is **+12.558 ns** against the 20 ns
-period constraint, so the design closes timing at 50 MHz with room to spare.
-The large register count is dominated by the **ISSP probe shadow registers**
-(4 × 480 bits + 312 bits) plus the 32×32-bit register file.
+Timing (`sta.summary`): worst-case setup slack on `clk` is **+11.313 ns** against
+the 20 ns period constraint, so the design closes timing at 50 MHz with room to
+spare.
+
+The ISSP probes are the area hog — the probe shadow registers alone are
+4 × 480 + 312 = 2,232 bits, on top of the 32×32-bit register file. They are
+compile-time optional (the `CPU_ISSP` macro, see §10). The default build omits
+them because **the design no longer fits with them enabled**: adding them back on
+top of the display register select needs ~7,566 combinational nodes against the
+device's 6,272. Enabling the macro requires reclaiming logic first (e.g. dropping
+probe cores or the display mux).
 
 > **Note:** `timing_constraints.sdc` only declares the 50 MHz `clk`. The divided
 > 12.5 MHz `cpu_clk` is *not* separately constrained — it is analyzed as part of
@@ -74,6 +82,7 @@ The large register count is dominated by the **ISSP probe shadow registers**
 |---|---|
 | `README.md` | This file — full project documentation |
 | `ARCHITECTURE.md` | Architecture diagrams (board, datapath, FSM, ALU, MULT/DIV, ISSP) |
+| `docs/RZ-EasyFPGA-A2.2-Board.md` | Board & FPGA reference: specs, pinout, config, quirks |
 | `docs/diagrams/` | Pre-rendered PNGs of every diagram, for viewers that cannot render ELK |
 
 ### Software
@@ -81,8 +90,10 @@ The large register count is dominated by the **ISSP probe shadow registers**
 | File | Role |
 |---|---|
 | `assembler.py` | MIPS-subset assembler; emits `program.hex` + `data.hex` |
+| `program.asm` | Source for the default test program (§11) |
+| `program(sum).asm`, `program(big_test).asm` | Sources for the alternate test programs |
 | `program.hex` | Instruction image (4,096 words, zero-padded) |
-| `data.hex` | Initial data memory (32 words, zero-padded) |
+| `data.hex` | Initial data memory (512 words, zero-padded) |
 | `program(sum).hex`, `program(big_test).hex` | Alternate test programs |
 | `data(sum).hex`, `data(big_test).hex` | Alternate data images |
 
@@ -97,9 +108,11 @@ The large register count is dominated by the **ISSP probe shadow registers**
 | `db/`, `dba/`, `incremental_db/`, `incremental_dba/` | Quartus internal databases (gitignored, regenerable) |
 | `simulation/questa/` | Generated Questa simulation netlist + `.sft` (gitignored) |
 
-> There is **no `.asm` source file** checked in — only the assembled `.hex`
-> outputs. Programs must be reconstructed from `program.hex` (the default
-> program is disassembled in §11) or rewritten.
+> The original assembly sources are now checked in alongside the `.hex` images:
+> `program.asm`, `program(sum).asm`, and `program(big_test).asm`. Re-assemble any
+> of them with `python3 assembler.py <source>` and compare against the matching
+> `.hex` (the default reproduces `program.hex` byte-for-byte; the two alternates
+> gain one unreachable trailing `HALT`, see §8).
 
 ---
 
@@ -177,8 +190,8 @@ Key design points:
 * **Write-back mux** (`wb_sel`) selects ALUOut, MDR, HI, or LO. Destination
   register (`reg_dst`) selects `rd`, `rt`, or `$31`.
 * **MMIO is decoded before `dmem`**, keeping `dmem.v` unmodified: `SW` to
-  address 31 diverts to the LED register and suppresses the real memory write;
-  `LW` from address 30 returns the button value.
+  address 511 diverts to the LED register and suppresses the real memory write;
+  `LW` from address 510 returns the button value.
 
 ### 3.3 Control FSM (`control_unit_mc.v`)
 
@@ -250,15 +263,16 @@ slice for the MSB that also exposes the raw sum bit (`Set`) needed by `SLT`.
 | Memory | Size | Read | Write | Init |
 |---|---|---|---|---|
 | `imem.v` | 4,096 × 32 | Combinational | Clocked (`wr_clk`) via UART loader | `$readmemh("program.hex")` |
-| `dmem.v` | 32 × 32 | Combinational | Clocked, gated by `write_enable` | `$readmemh("data.hex")` |
+| `dmem.v` | 512 × 32 | Combinational | Clocked, gated by `write_enable` | `$readmemh("data.hex")` |
 
 `imem` uses a **12-bit address**, chosen deliberately: 4,096 words needs
 16 M9K blocks at 32-bit width, within the EP4CE6's 30-block budget (14 spare).
 An earlier 8,192-word / 13-bit attempt needed 32 blocks and **failed to fit**.
 
 Both `program.hex` and `data.hex` are **zero-padded to full depth** by the
-assembler, so both files must always exist even if a program has no `.data`
-section.
+assembler (4,096 and 512 words respectively), so both files must always exist
+even if a program has no `.data` section. Full padding is mandatory: `$readmemh`
+leaves any word not present in the file uninitialised rather than 0.
 
 ### 3.7 Clocking, reset, and the start button (`top_cpu_mc.v`)
 
@@ -368,22 +382,22 @@ after reset. At 12.5 MHz, a plain ALU instruction takes 320 ns.
 
 ## 6. Memory map & memory-mapped I/O
 
-### Data memory (`dmem`, 32 words, 5-bit address)
+### Data memory (`dmem`, 512 words, 9-bit address)
 
-Addresses come from `alu_out_reg[4:0]`, so only the low 5 bits of a computed
-address are used.
+Addresses come from `alu_out_reg[8:0]`, so the low 9 bits of a computed address
+select the word.
 
 | Address | Access | Behaviour |
 |---|---|---|
-| `0` – `29` | read/write | Ordinary data memory words |
-| `30` | `LW` | **MMIO**: returns `{31'b0, KEY[4]}` (the debounced spare button) |
-| `30` | `SW` | Ordinary write to `mem[30]` (not intercepted) |
-| `31` | `SW` | **MMIO**: writes `b_reg[3:0]` to `led_reg` → `LEDG[3:0]` |
-| `31` | `LW` | Ordinary read of `mem[31]` (not intercepted) |
+| `0` – `509` | read/write | Ordinary data memory words |
+| `510` | `LW` | **MMIO**: returns `{31'b0, KEY[4]}` (the debounced spare button) |
+| `510` | `SW` | Ordinary write to `mem[510]` (not intercepted) |
+| `511` | `SW` | **MMIO**: writes `b_reg[3:0]` to `led_reg` → `LEDG[3:0]` |
+| `511` | `LW` | Ordinary read of `mem[511]` (not intercepted) |
 
-The asymmetry (30 is read-intercepted, 31 is write-intercepted) means `mem[30]`
-is unusable via `LW` and `mem[31]` is unusable via `SW`, but each remains
-accessible in the other direction.
+The asymmetry (510 is read-intercepted, 511 is write-intercepted) means
+`mem[510]` is unusable via `LW` and `mem[511]` is unusable via `SW`, but each
+remains accessible in the other direction.
 
 The **LEDs are physically active-LOW** on this board. `top_cpu_mc.v` inverts at
 the pin (`assign LEDG = ~led_bus`), so `cpu_top_mc.v` stays board-agnostic:
@@ -411,7 +425,7 @@ through the UART loader's dedicated write port.
 | `SEG[0..7]` | `PIN_128,121,125,129,132,126,124,127` | 7-segment + DP |
 | `DIG[0..3]` | `PIN_133,135,136,137` | Digit select |
 | `LEDG[0..3]` | `PIN_87,86,85,84` | MMIO output (active-LOW) |
-| `UART_RXD` | **unassigned** | Serial program loading — see §13 |
+| `UART_RXD` | `PIN_115` | Serial program loading (3.3-V LVCMOS) — see §9 |
 
 All I/O standard `3.3-V LVCMOS`. `set_false_path` is applied to `KEY[*]` in the
 SDC since they are asynchronous push-buttons.
@@ -420,9 +434,11 @@ SDC since they are asynchronous push-buttons.
 
 `seg7_display.v` time-multiplexes 4 digits using `refresh_counter[18:17]`.
 
-* **Value shown:** the low 16 bits of one of `$5`, `$6`, `$7`, `$8`, selected by
-  `KEY[1:0]` (`00`→`$5`, `01`→`$6`, `10`→`$7`, `11`→`$8`). These are the
-  registers the bundled test program uses.
+* **Value shown:** the low 16 bits of a selectable register. `KEY[0]` steps the
+  selection through `$0`…`$31` (one press = next register, wrapping; it powers up
+  on `$5`). Holding `KEY[1]` shows the **selected register index** instead of its
+  value. Both keys are debounced and `KEY[0]` is edge-detected, so one press is
+  exactly one step.
 * **Decimal point:** lights on the leftmost digit when the **sticky overflow
   flag** is set.
 * **Polarity:** this board's segments and digit selects are **active-LOW**, so
@@ -447,9 +463,8 @@ The loader counts up to word address 4095 (a full 4,096-word image =
 address counter for the next transfer. While `loading` is high, `KEY[2]` is
 ignored.
 
-> The module header comment still says "expects exactly 512 bytes (128 words)" —
-> that is **stale**; the logic and the assembler's padding now both target
-> 4,096 words.
+> The loader targets the full 4,096-word image — see §8 for the assembler's
+> padding and `uart_loader.v`'s byte handling.
 
 ---
 
@@ -466,7 +481,7 @@ python3 assembler.py program.asm
 **Outputs** (written to the current directory):
 
 * `program.hex` — 4,096 lines, one 32-bit hex word per line, zero-padded.
-* `data.hex` — 32 lines, zero-padded.
+* `data.hex` — 512 lines, zero-padded.
 
 **Source syntax:**
 
@@ -530,10 +545,10 @@ loop:   BEQ  $3, $0, done     # branch:  BEQ/BNE $rs, $rt, label
 
 ### Alternative: UART loading
 
-`uart_loader.v` can write `imem` at runtime over serial, but is **not currently
-in use** (and `UART_RXD` has no pin assignment). Wiring it up requires assigning
-`UART_RXD` in the Pin Planner and providing a host-side sender for the padded
-`program.hex` bytes.
+`uart_loader.v` can write `imem` at runtime over serial. `UART_RXD` is now pinned
+at `PIN_115` (3.3-V LVCMOS, see §7), so wiring a host-side sender for the padded
+`program.hex` bytes is all that remains to use it. While a transfer is in flight
+`loading` is high and `KEY[2]` is ignored.
 
 ### Simulation
 
@@ -549,6 +564,12 @@ need to stub or bypass them (e.g. simulate `cpu_top_mc` directly rather than
 
 Five `altera_in_system_sources_probes` cores are instantiated in `top_cpu_mc.v`.
 Each probe word *n* occupies bits `[32n+31 : 32n]` within its instance.
+
+> **Compile-time optional — and off by default.** The whole probe section is
+> guarded by the `CPU_ISSP` macro in `Mips_Multi_Cycle_Cpu.qsf`. It is commented
+> out by default because the probes plus the display register select exceed the
+> EP4CE6's logic (see §1); uncomment it only after freeing logic elsewhere. The
+> `.spf` snapshots require it enabled.
 
 The cores are limited by the **ALTSOURCE_PROBE hard 511-bit `PROBE_WIDTH`
 limit** — which is why no instance uses 16 full words (512 bits). The 5-instance
@@ -617,8 +638,9 @@ split maximizes coverage within that ceiling.
 
 ### Default program (`program.hex` + `data.hex`)
 
-The checked-in default sums `data[0..9]` (1 through 10) and stores the result
-(55 = `0x37`) at `mem[10]`. Disassembled:
+The default program (`program.asm`) sums `data[0..9]` (1 through 10) and stores
+the result (55 = `0x37`) at `mem[10]`. Re-assembling it reproduces the checked-in
+`program.hex` / `data.hex` byte-for-byte. Disassembled:
 
 ```asm
         ADDI $1, $0, 0        # $1 = pointer = 0
@@ -632,69 +654,65 @@ loop:   BEQ  $3, $0, done     # if counter == 0, exit
         SUB  $3, $3, $6       # counter--
         BEQ  $0, $0, loop     # unconditional back-edge
 done:   SW   $2, 10($0)       # mem[10] = sum
-        HALT                  # (auto-appended; not in original source)
+        HALT                  # explicit stop (present in program.asm)
 ```
 
 Expected: `$1 = 10`, `$2 = 55`, `$3 = 0`, `mem[10] = 0x37`.
 
 ### Alternate images
 
-* **`program(sum).hex` + `data(sum).hex`** — sums `data[0..5]` in a loop
-  controlled by a value loaded from `mem[6]`, using a `JAL` subroutine and a
-  `BEQ $0,$0,-1` spin loop at the end.
-* **`program(big_test).hex` + `data(big_test).hex`** — exercises `AND`, `OR`,
-  and both directions of `SLT` on `$1 = 12`, `$2 = 10`, then a conditional
-  branch jump over `ADDI $7, $0, 999`, ending in a spin loop. Useful for
-  verifying the SLT fix that motivated the clock divider.
+* **`program(sum).asm` → `program(sum).hex` + `data(sum).hex`** — walks
+  `data[0..]` counting with `$1` and stops when the index reaches the value
+  loaded from `mem[6]` (= 6), using a `JAL` as the back-edge and ending in a
+  `BEQ $0,$0,-1` spin loop.
+* **`program(big_test).asm` → `program(big_test).hex` + `data(big_test).hex`** —
+  exercises `AND`, `OR`, and both directions of `SLT` on `$1 = 12`, `$2 = 10`,
+  then a conditional branch over `ADDI $7, $0, 999`, ending in a spin loop. In
+  practice `$1 != $2`, so the branch is never taken. Useful for verifying the SLT
+  fix that motivated the clock divider.
 
-To use an alternate image, copy it over `program.hex` / `data.hex` (or adjust
-the `$readmemh` filenames) and recompile.
+Both alternate images were regenerated from these sources: they are now padded to
+the full 4,096 words and carry one trailing `HALT` appended by the assembler
+(unreachable, since both end in a spin loop). `program(big_test).hex` also has a
+corrected branch offset — the original image targeted padding, a leftover from
+the pre-`PC+1` branch convention.
+
+To use an alternate image, copy it over `program.hex` / `data.hex` (or adjust the
+`$readmemh` filenames) and recompile.
 
 ---
 
-## 12. Known issues, caveats, and stale comments
+## 12. Caveats
 
-These were found while documenting the design and are worth cleaning up:
+The nine issues previously documented here are all addressed:
 
-1. **`UART_RXD` has no pin assignment.** It is a top-level port of
-   `top_cpu_mc.v` but is absent from the `.qsf`, so Quartus auto-places it.
-   Serial loading is therefore effectively disabled; add a
-   `set_location_assignment` before using the loader.
+* **1** — `UART_RXD` is pinned at `PIN_115` (3.3-V LVCMOS) in the `.qsf` (§7).
+* **2–5** — the stale comments and the 7-bit PC literals were corrected in
+  `top_cpu_mc.v`, `cpu_top_mc.v`, `regfile.v`, and `uart_loader.v`.
+* **6** — the ISSP probe cores are now compile-time optional via the `CPU_ISSP`
+  macro; they ship **disabled** because they no longer fit alongside the display
+  register select (§10, §1).
+* **7** — `dmem` grew to 512 words and MMIO moved to addresses 510/511 (§6).
+* **8** — `program.asm`, `program(sum).asm`, and `program(big_test).asm` are
+  checked in, with the matching `.hex` images regenerated (§11).
+* **9** — the 7-segment display can now show any register, not just `$5`–`$8` (§7).
 
-2. **Stale `.spf` / probe-width comment in `top_cpu_mc.v`.** The header still
-   says *"PC is now 13 bits (was 7)"* — the PC is **12 bits**. A nearby comment
-   also refers to widening `probe_bus_lo` to 492 bits, but no such bus exists
-   anymore (it was replaced by the `probe_bus_regs_lo`/`_hi` split).
+What remains worth knowing:
 
-3. **Stale register preload comment in `regfile.v`.** The header claims `$1`,
-   `$2`, and `$4` are preloaded with test values (12, 10, 3) at startup. The
-   module does no such thing — registers start at 0 (or are reset to 0). The
-   default program initializes its own registers.
-
-4. **Stale byte-count comment in `uart_loader.v`.** Header says "exactly 512
-   bytes (128 words)"; the logic now loads up to 4,096 words.
-
-5. **Width-mismatch literals in `cpu_top_mc.v`.** The PC is 12 bits but the
-   code uses `pc + 7'd1` and `pc <= 7'd0`. Harmless (the result is truncated to
-   12 bits by context), but misleading — these are leftovers from the 7-bit PC.
-
-6. **Device is 98 % full.** Only 122 logic elements of headroom remain. Any
-   feature addition (new instruction, wider PC, extra ISSP probe) will likely
-   require reclaiming logic — the ISSP probe registers are the obvious place to
-   start, since the 2,232 bits of probe shadow registers plus the 32×32 register
-   file dominate the 4,948 registers.
-
-7. **`dmem` is only 32 words** with a 5-bit address, and two of those addresses
-   are partly consumed by MMIO. Programs needing more storage have nowhere to
-   put it.
-
-8. **No `.asm` sources checked in.** Only the assembled `.hex` images are
-   version-controlled; the original assembly sources were never committed. The
-   default program is disassembled in §11 for reference.
-
-9. **The 7-segment display can only show `$5`–`$8`.** This is a leftover from
-   the single-cycle test program; there is no way to view an arbitrary register
-   without recompiling.
+1. **Verified by synthesis, not on hardware.** Analysis & Synthesis, the Fitter,
+   and TimeQuest all pass from this state (92 % logic, +11.313 ns setup slack,
+   §1), but the changes have not been exercised on the board. The display select,
+   the 512-word `dmem`, and the MMIO move to 510/511 should be checked on
+   hardware.
+2. **The ISSP probes no longer fit by default.** With `CPU_ISSP` enabled the
+   Fitter fails (~7,566 combinational nodes against 6,272), so the macro ships
+   commented out and the `.spf` snapshots do not work in the default build.
+   Re-enabling it requires reclaiming logic (drop probe cores or the display mux).
+3. **Two MMIO addresses stay partly consumed.** `mem[510]` is unreadable via
+   `LW` and `mem[511]` is unwritable via `SW` (§6).
+4. **`cpu_clk` is not separately constrained.** `timing_constraints.sdc` only
+   declares the 50 MHz `clk`; the divided clock is folded into that domain,
+   which is conservative (§1).
 
 ---
 
@@ -728,9 +746,10 @@ The design evolved in five stages:
    restoring-division loop), `MFHI`/`MFLO`, `JAL`, `HALT`, and the sticky
    `overflow` / `illegal_opcode` flags; `TRAP` was introduced for unrecognized
    instructions.
-5. **I/O and tooling.** Memory-mapped I/O (button at address 30, LEDs at 31), a
-   9600-baud UART program loader, and finally the cleanup that removed the
-   single-cycle legacy files, `.bak` snapshots, and duplicate artifacts.
+5. **I/O and tooling.** Memory-mapped I/O (originally button at address 30 and
+   LEDs at 31, later moved to 510/511 when `dmem` grew), a 9600-baud UART program
+   loader, and finally the cleanup that removed the single-cycle legacy files,
+   `.bak` snapshots, and duplicate artifacts.
 
 ---
 
@@ -742,7 +761,7 @@ Build:      quartus_sh --flow compile Mips_Multi_Cycle_Cpu   (or use the Quartus
 Program:    output_files/Mips_Multi_Cycle_Cpu.sof via JTAG
 Run:        KEY[2]   (one press = whole program)
 Reset:      KEY[3]
-Display:    KEY[1:0] selects $5 / $6 / $7 / $8; DP = overflow flag
-MMIO:       LW from address 30 = KEY[4] button;  SW to address 31 = LEDG[3:0]
+Display:    KEY[0] steps the shown register ($0-$31); KEY[1] held shows its index
+MMIO:       LW from address 510 = KEY[4] button;  SW to address 511 = LEDG[3:0]
 Halt:       HALT instruction (opcode 111111), or a BEQ $0,$0,-1 spin loop
 ```

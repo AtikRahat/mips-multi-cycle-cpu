@@ -8,7 +8,7 @@
 // one-clock write into imem at the current word address, then
 // advances to the next address.
 //
-// Always expects exactly 512 bytes (128 words) - matching
+// Always expects the full 4,096-word image (16,384 bytes) - matching
 // assembler.py's zero-padded program.hex output exactly, so there's
 // no header/length byte to parse: you just send the whole padded
 // image every time.
@@ -23,8 +23,8 @@ module uart_loader (
     output [11:0] wr_addr,  // 12 bits (4,096-word imem)
     output [31:0] wr_data,
 
-    output       loading,      // high from the first byte received until the 512th
-    output       load_done     // one-clk pulse: just finished receiving all 512 bytes
+    output       loading,      // high from the first byte received until the last
+    output       load_done     // one-clk pulse: just finished receiving all 4,096 words
 );
 
     reg [31:0] assemble_reg = 32'd0;

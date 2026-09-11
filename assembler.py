@@ -20,7 +20,8 @@ Supports:
 
 Produces TWO files:
   program.hex - instruction memory contents (for imem.v's $readmemh)
-  data.hex    - initial data memory contents (for dmem.v's $readmemh)
+  data.hex    - initial data memory contents (512 words, for dmem.v's
+                $readmemh)
 """
 
 import re
@@ -317,4 +318,4 @@ if __name__ == '__main__':
         for name, addr in data_labels.items():
             print(f"  {name:12s} -> memory[{addr}]")
     print()
-    write_hex_file(data_values, "data.hex", depth=32, word_desc="data words")
+    write_hex_file(data_values, "data.hex", depth=512, word_desc="data words")

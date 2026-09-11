@@ -1,15 +1,11 @@
 //====================================================================
 // top_cpu_mc.v  (board top-level for the MULTI-CYCLE CPU)
 //
-// Same board wiring as top_cpu.v (KEY[2] via debounce+edge_detector,
-// same SEG/DIG display), but instantiates cpu_top_mc instead of
-// cpu_top, and now KEY[2] means "run the next full instruction"
-// (auto-runs internal IF/ID/EX/MEM/WB cycles on CLOCK_50) rather than
-// "advance one cycle."
+// Board wiring, SEG/DIG display, clock divider, debounce and MMIO, with
+// cpu_top_mc as the CPU. After reset, one KEY[2] press auto-runs the
+// whole program on cpu_clk; KEY[3] resets.
 //
-// NOTE: PC is now 13 bits (was 7) - the ISSP .spf needs rebuilding to
-// match this and the current register/memory/status signal set. See
-// project notes for the planned full 32-register/32-memory .spf rebuild.
+// NOTE: PC is 12 bits (was 7) - 4,096 instructions.
 //====================================================================
 
 module top_cpu_mc (
@@ -25,7 +21,7 @@ module top_cpu_mc (
     //--------------------------------------------------------------
     // Clock divider for the CPU's own logic. Timing analysis showed
     // the real critical path is ~23.75ns (Fmax 42.1MHz), which is
-    // longer than CLOCK_50's 20ns period - that's the root cause of
+    // longer than clk's 20ns period - that's the root cause of
     // the wrong SLT results on hardware. Dividing by 4 gives the CPU
     // an 80ns period per cycle, over 3x the margin it actually needs.
     // Debounce stays on raw clk since its timing is calibrated in
@@ -34,7 +30,7 @@ module top_cpu_mc (
     reg [1:0] clkdiv = 2'd0;
     always @(posedge clk)
         clkdiv <= clkdiv + 2'd1;
-    wire cpu_clk = clkdiv[1]; // CLOCK_50 / 4
+    wire cpu_clk = clkdiv[1]; // 50 MHz / 4
 
     wire key2_raw = ~KEY[2];
     wire key2_debounced;
@@ -129,12 +125,8 @@ module top_cpu_mc (
     wire start_pulse = (sync2 & ~sync2_prev) & ~uart_loading;
 
     wire [31:0] r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31;
-    wire [11:0] pc_debug;  // 12 bits (4,096 instructions)
-                           // NOTE: this widens probe_bus_lo below to 492
-                           // bits (was 487, sized for the original 7-bit
-                           // PC) - cpu_issp_lo's .probe port must be
-                           // regenerated to 492 bits in Quartus IP Catalog
-                           // before this will compile - see hardware steps
+    wire [11:0] pc_debug;  // 12 bits (4,096 instructions); carried in
+                           // probe_bus_status below
     wire [31:0] cur_instr;
     wire [4:0]  dmem_addr;
     wire [31:0] dmem_wdata, dmem_rdata;
@@ -195,16 +187,49 @@ module top_cpu_mc (
         .uart_wr_data(loader_wr_data)
     );
 
-    wire [1:0] sel = KEY[1:0];
-    wire [31:0] shown =
-        (sel == 2'b00) ? r5 :
-        (sel == 2'b01) ? r6 :
-        (sel == 2'b10) ? r7 : r8;
+    //--------------------------------------------------------------
+    // NEW: display register select. KEY[0] steps reg_sel through
+    // $0..$31 (one press = next register, wrapping $31 -> $0);
+    // KEY[1] held shows the register index instead of its value.
+    // Both keys are debounced on the fast clk like the other buttons,
+    // and KEY[0] is edge-detected so one press = one step.
+    //--------------------------------------------------------------
+    wire key0_raw = ~KEY[0];
+    wire key1_raw = ~KEY[1];
+    wire key0_debounced, key1_debounced;
+    debounce db_sel0 (.clk(clk), .btn_in(key0_raw), .btn_out(key0_debounced));
+    debounce db_sel1 (.clk(clk), .btn_in(key1_raw), .btn_out(key1_debounced));
+
+    wire key0_pulse;
+    edge_detector ed_sel0 (.clk(clk), .signal_in(key0_debounced), .pulse_out(key0_pulse));
+
+    reg [4:0] reg_sel = 5'd5;   // start on $5, matching the old fixed view
+    always @(posedge clk)
+        if (key0_pulse)
+            reg_sel <= reg_sel + 5'd1;
+
+    // Only the displayed low 16 bits are muxed, to keep the added logic
+    // small (the design is close to full); $0 reads as constant 0.
+    wire [15:0] sel_lo =
+        (reg_sel == 5'd0)  ? 16'd0  :
+        (reg_sel == 5'd1)  ? r1[15:0]  : (reg_sel == 5'd2)  ? r2[15:0]  : (reg_sel == 5'd3)  ? r3[15:0]  :
+        (reg_sel == 5'd4)  ? r4[15:0]  : (reg_sel == 5'd5)  ? r5[15:0]  : (reg_sel == 5'd6)  ? r6[15:0]  :
+        (reg_sel == 5'd7)  ? r7[15:0]  : (reg_sel == 5'd8)  ? r8[15:0]  : (reg_sel == 5'd9)  ? r9[15:0]  :
+        (reg_sel == 5'd10) ? r10[15:0] : (reg_sel == 5'd11) ? r11[15:0] : (reg_sel == 5'd12) ? r12[15:0] :
+        (reg_sel == 5'd13) ? r13[15:0] : (reg_sel == 5'd14) ? r14[15:0] : (reg_sel == 5'd15) ? r15[15:0] :
+        (reg_sel == 5'd16) ? r16[15:0] : (reg_sel == 5'd17) ? r17[15:0] : (reg_sel == 5'd18) ? r18[15:0] :
+        (reg_sel == 5'd19) ? r19[15:0] : (reg_sel == 5'd20) ? r20[15:0] : (reg_sel == 5'd21) ? r21[15:0] :
+        (reg_sel == 5'd22) ? r22[15:0] : (reg_sel == 5'd23) ? r23[15:0] : (reg_sel == 5'd24) ? r24[15:0] :
+        (reg_sel == 5'd25) ? r25[15:0] : (reg_sel == 5'd26) ? r26[15:0] : (reg_sel == 5'd27) ? r27[15:0] :
+        (reg_sel == 5'd28) ? r28[15:0] : (reg_sel == 5'd29) ? r29[15:0] : (reg_sel == 5'd30) ? r30[15:0] :
+                             r31[15:0];
+
+    wire [15:0] disp_value = key1_debounced ? {11'b0, reg_sel} : sel_lo;
 
     seg7_display disp (
         .clk(clk),
-        .hex_value(shown[15:0]),
-        .cout(overflow_flag), // NEW: decimal point lights up when overflow has latched
+        .hex_value(disp_value),
+        .cout(overflow_flag), // decimal point lights up when overflow has latched
         .seg(SEG),
         .an(DIG)
     );
@@ -226,7 +251,13 @@ module top_cpu_mc (
     //                        transaction, plus $30/$31/mem30/mem31
     //                        (312 bits)
     // Word n occupies bits [32*n+31 : 32*n] within its instance.
+    //
+    // The whole probe section is compile-time optional: define the
+    // CPU_ISSP macro (see the .qsf) for a full-debug build, or omit it
+    // to reclaim the ~2,232 probe shadow registers on this 98%-full
+    // device. The .spf snapshots require the macro ON.
     //================================================================
+`ifdef CPU_ISSP
 
     //--------------------------------------------------------------
     // cpu_issp_regs_lo: $0-$14. $0 is architecturally hardwired to
@@ -312,5 +343,7 @@ module top_cpu_mc (
         .source (),
         .probe  (probe_bus_status)
     );
+
+`endif
 
 endmodule
