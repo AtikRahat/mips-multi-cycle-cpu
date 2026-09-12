@@ -24,6 +24,7 @@ Produces TWO files:
                 $readmemh)
 """
 
+import utils.session
 import re
 import sys
 

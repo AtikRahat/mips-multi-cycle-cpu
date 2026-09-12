@@ -3,8 +3,10 @@
 A **multi-cycle MIPS softcore** written in Verilog, targeting an Altera/Intel
 **Cyclone IV E `EP4CE6E22C8`** (EP4CE6 development board). The CPU executes a
 17-instruction MIPS subset with an FSM-driven datapath, on-chip instruction and
-data memory, a UART program loader, memory-mapped I/O, and five in-system
-source-and-probe (ISSP) debug cores for live inspection in Quartus.
+data memory, a UART program loader, memory-mapped I/O, and a 4-digit 7-segment
+register display. Five in-system source-and-probe (ISSP) debug cores used to
+provide live inspection in Quartus; they were removed (see §10) and remain
+recoverable from git history.
 
 This project is the **multi-cycle successor** to an earlier single-cycle design.
 The single-cycle RTL and its unused ISSP cores were removed during a cleanup
@@ -26,30 +28,34 @@ pass; they remain recoverable from git history (see §13).
 
 ### Current fit (last successful compile)
 
-From `output_files/Mips_Multi_Cycle_Cpu.fit.summary` — this is the **default
-build**, i.e. with the ISSP probes compiled out (`CPU_ISSP` unset, see §10):
+From `output_files/Mips_Multi_Cycle_Cpu.fit.summary`:
 
 | Resource | Usage |
 |---|---|
-| Total logic elements | **5,790 / 6,272 (92 %)** |
-| Combinational functions | 4,989 / 6,272 (80 %) |
-| Dedicated logic registers | 3,654 / 6,272 (58 %) |
-| Memory bits | 145,408 / 276,480 (53 %) |
+| Total logic elements | **3,279 / 6,272 (52 %)** |
+| Combinational functions | 3,011 / 6,272 (48 %) |
+| Dedicated logic registers | 1,564 / 6,272 (25 %) |
+| Memory bits | 147,456 / 276,480 (53 %) |
 | Pins | 23 / 92 (25 %) |
 | Embedded multipliers | 0 / 30 |
 | PLLs | 0 / 2 |
 
-Timing (`sta.summary`): worst-case setup slack on `clk` is **+11.313 ns** against
+Timing (`sta.summary`): worst-case setup slack on `clk` is **+13.470 ns** against
 the 20 ns period constraint, so the design closes timing at 50 MHz with room to
 spare.
 
-The ISSP probes are the area hog — the probe shadow registers alone are
-4 × 480 + 312 = 2,232 bits, on top of the 32×32-bit register file. They are
-compile-time optional (the `CPU_ISSP` macro, see §10). The default build omits
-them because **the design no longer fits with them enabled**: adding them back on
-top of the display register select needs ~7,566 combinational nodes against the
-device's 6,272. Enabling the macro requires reclaiming logic first (e.g. dropping
-probe cores or the display mux).
+The win comes from two changes: removing `dmem`'s 32 fixed-address debug taps
+(which had forced Quartus to shadow the whole 512-word data memory into
+flip-flops), and giving `dmem` a synchronous read so Quartus infers real M9K
+block RAM — compensated by a new `MEM2` FSM state (LW = IF, ID, EX, MEM, MEM2,
+WB; see §3.3 and §3.6). The five ISSP debug cores and their probe wiring were
+also removed outright (§10), so the fit above has no debug overhead at all.
+
+The ISSP probes were the area hog — the probe shadow registers alone were
+4 × 480 + 312 = 2,232 bits, on top of the 32×32-bit register file. They were
+first made compile-time optional (the `CPU_ISSP` macro), then removed outright
+along with the `dmem` debug taps (see §10) — the 52 % fit above carries no
+debug overhead at all.
 
 > **Note:** `timing_constraints.sdc` only declares the 50 MHz `clk`. The divided
 > 12.5 MHz `cpu_clk` is *not* separately constrained — it is analyzed as part of
@@ -63,13 +69,13 @@ probe cores or the display mux).
 
 | File | Role |
 |---|---|
-| `top_cpu_mc.v` | Board-level top: pin wiring, clock divider, debounce, MMIO, UART loader, 5× ISSP |
+| `top_cpu_mc.v` | Board-level top: pin wiring, clock divider, debounce, MMIO, UART loader, register-select display |
 | `cpu_top_mc.v` | Multi-cycle **datapath**: PC, datapath registers, register file, ALU, memories, MULT/DIV |
 | `control_unit_mc.v` | Multi-cycle **control FSM**: state machine + all control signals |
 | `ALU_32_bit.v` | 32-bit ripple ALU (`alu_1bit`, `alu_1Xbit`, `full_adder`, `mux4x1`) |
 | `regfile.v` | 32×32 register file, 2 combinational read ports, 1 write port, `$0` hardwired to 0 |
 | `imem.v` | Instruction memory, 4,096 × 32, `$readmemh("program.hex")` + UART write port |
-| `dmem.v` | Data memory, 32 × 32, `$readmemh("data.hex")`, combinational read |
+| `dmem.v` | Data memory, 512 × 32, `$readmemh("data.hex")`, synchronous read (M9K) |
 | `debounce.v` | Button debouncer + `edge_detector` module |
 | `seg7_decoder.v` | 4-bit hex → 7-segment pattern |
 | `seg7_display.v` | 4-digit time-multiplexed scan driver |
@@ -81,7 +87,7 @@ probe cores or the display mux).
 | File | Role |
 |---|---|
 | `README.md` | This file — full project documentation |
-| `ARCHITECTURE.md` | Architecture diagrams (board, datapath, FSM, ALU, MULT/DIV, ISSP) |
+| `ARCHITECTURE.md` | Architecture diagrams (board, datapath, FSM, ALU, MULT/DIV, clock domains, instruction timing) |
 | `docs/RZ-EasyFPGA-A2.2-Board.md` | Board & FPGA reference: specs, pinout, config, quirks |
 | `docs/diagrams/` | Pre-rendered PNGs of every diagram, for viewers that cannot render ELK |
 
@@ -97,14 +103,11 @@ probe cores or the display mux).
 | `program(sum).hex`, `program(big_test).hex` | Alternate test programs |
 | `data(sum).hex`, `data(big_test).hex` | Alternate data images |
 
-### IP cores / build artifacts
+### Build outputs (regenerable, gitignored)
 
 | Path | Role |
 |---|---|
-| `cpu_issp_regs_lo/`, `cpu_issp_regs_hi/` | ISSP cores (480 bits each) — **active** |
-| `cpu_issp_dmem_lo/`, `cpu_issp_dmem_hi/` | ISSP cores (480 bits each) — **active** |
-| `cpu_issp_status/` | ISSP core (312 bits) — **active** |
-| `output_files/` | Quartus outputs (`.sof`, reports, `.spf` probe snapshots) |
+| `output_files/` | Quartus outputs (`.sof`, reports). Regenerate with `quartus_sh --flow compile` |
 | `db/`, `dba/`, `incremental_db/`, `incremental_dba/` | Quartus internal databases (gitignored, regenerable) |
 | `simulation/questa/` | Generated Questa simulation netlist + `.sft` (gitignored) |
 
@@ -119,8 +122,8 @@ probe cores or the display mux).
 ## 3. Architecture
 
 > Full-page [Mermaid](https://mermaid.js.org/) diagrams (board level, datapath,
-> control/status signals, FSM state diagram, ALU, MULT/DIV, clock domains, ISSP
-> probe map, instruction timing) are in **[`ARCHITECTURE.md`](ARCHITECTURE.md)**.
+> control/status signals, FSM state diagram, ALU, MULT/DIV, clock domains,
+> instruction timing) are in **[`ARCHITECTURE.md`](ARCHITECTURE.md)**.
 > The summary below is the quick-reference version.
 
 ### 3.1 Block diagram
@@ -128,7 +131,7 @@ probe cores or the display mux).
 ```
                     ┌──────────────────────────────────────────────┐
                     │              control_unit_mc.v               │
-                    │   FSM: IDLE→IF→ID→EX→{MEM,WB,MD_LOOP,...}     │
+                     │   FSM: IDLE→IF→ID→EX→{MEM,MEM2,WB,MD_LOOP,...}│
                     │   emits: ir_write, pc_write, alu_op, ...      │
                     └───────┬──────────────────────────────────────┘
                             │ control signals
@@ -171,7 +174,7 @@ decides *which* register latches on a given clock edge.
 | `a_reg`, `b_reg` | 32 | ID | Latched register-file read operands |
 | `branch_target_reg` | 12 | ID | `pc_plus1_reg + sign_extend(imm16)` |
 | `alu_out_reg` | 32 | EX | Latched ALU result (arithmetic result *or* memory address) |
-| `mdr_reg` | 32 | MEM | Latched data-memory read value |
+| `mdr_reg` | 32 | MEM2 | Latched data-memory read value (one cycle after MEM presents the address — `dmem`'s read is synchronous so Quartus infers M9K) |
 | `hi_reg`, `lo_reg` | 32 | MD_DONE | Architectural HI/LO for MFHI/MFLO |
 | `md_product_reg` | 64 | MD_LOOP | MULT product accumulator / DIV `{remainder:quotient}` |
 | `md_b_reg` | 32 | EX | MULT multiplicand / DIV divisor magnitude |
@@ -206,7 +209,8 @@ The control unit holds **no data** — only the current state. It decodes
 | `IF` | `4'd1` | Fetch: `ir_reg <= imem[pc]`, `pc_plus1_reg <= pc+1` |
 | `ID` | `4'd2` | Decode/operand fetch: `A <= rf[rs]`, `B <= rf[rt]`, branch target |
 | `EX` | `4'd3` | Execute: ALU, PC update, JAL `$31` write |
-| `MEM` | `4'd4` | Data memory access (LW/SW) |
+| `MEM` | `4'd4` | Address present for LW/SW; SW writes here |
+| `MEM2` | `4'd10` | LW only: capture `dmem` read data into MDR (one cycle of synchronous-read latency for M9K inference; SW skips this state) |
 | `WB` | `4'd5` | Register write-back |
 | `TRAP` | `4'd6` | Illegal instruction — permanent until reset |
 | `MD_LOOP` | `4'd7` | MULT/DIV 32-iteration shift-add / restoring-division loop |
@@ -256,14 +260,22 @@ slice for the MSB that also exposes the raw sum bit (`Set`) needed by `SLT`.
 * 32 × 32-bit storage, two **combinational** read ports, one **clocked** write port.
 * `$0` is hardwired to read as 0 and ignores writes (`write_reg != 5'd0`).
 * `rst` synchronously clears all 32 physical registers, taking priority over writes.
-* Every register `$1`–`$31` has a dedicated debug output feeding the ISSP probes.
+* Every register `$1`–`$31` has a dedicated debug output (used by the
+  7-segment register-select display in `top_cpu_mc.v`).
 
 ### 3.6 Memories
 
 | Memory | Size | Read | Write | Init |
 |---|---|---|---|---|
 | `imem.v` | 4,096 × 32 | Combinational | Clocked (`wr_clk`) via UART loader | `$readmemh("program.hex")` |
-| `dmem.v` | 512 × 32 | Combinational | Clocked, gated by `write_enable` | `$readmemh("data.hex")` |
+| `dmem.v` | 512 × 32 | Synchronous (1-cycle latency) | Clocked, gated by `write_enable` | `$readmemh("data.hex")` |
+
+The synchronous `dmem` read is deliberate: Cyclone IV block RAM has no
+combinational read path Quartus can infer, so an async
+`assign read_data = mem[addr]` fails inference (Error 276003) and falls back
+to one flip-flop per bit (16,384 registers). The registered read is the
+standard single-port-RAM template Quartus maps to 2 M9K blocks; the FSM
+compensates with the extra `MEM2` state (LW = IF, ID, EX, MEM, MEM2, WB).
 
 `imem` uses a **12-bit address**, chosen deliberately: 4,096 words needs
 16 M9K blocks at 32-bit width, within the EP4CE6's 30-block budget (14 spare).
@@ -367,7 +379,7 @@ Cycle counts on `cpu_clk` (12.5 MHz), per instruction:
 | `ADD`/`SUB`/`AND`/`OR`/`SLT` | 4 | IF, ID, EX, WB |
 | `ADDI` | 4 | IF, ID, EX, WB |
 | `MFHI`/`MFLO` | 4 | IF, ID, EX, WB |
-| `LW` | 5 | IF, ID, EX, MEM, WB |
+| `LW` | 6 | IF, ID, EX, MEM, MEM2, WB |
 | `SW` | 4 | IF, ID, EX, MEM |
 | `BEQ`/`BNE` | 3 | IF, ID, EX |
 | `JR`/`JAL` | 3 | IF, ID, EX (JAL writes `$31` in EX) |
@@ -538,10 +550,8 @@ loop:   BEQ  $3, $0, done     # branch:  BEQ/BNE $rs, $rt, label
 5. **Run:** press **`KEY[2]`** once to run the entire program.
    **`KEY[3]`** resets. Flip `KEY[1:0]` to change which register is displayed.
 
-> The `.qsf` also references three `.spf` probe-snapshot files
-> (`All_Snapshot_100Inst.spf`, `new view.spf`,
-> `Brand_New_Spf_For_Multi_Cycle_Cpu_(Manual).spf`) — these are SignalTap/ISSP
-> snapshot configurations for the debugger.
+> The `.qsf` used to reference three `.spf` probe-snapshot files for the ISSP
+> debugger; those snapshots and the cores they attached to were removed (§10).
 
 ### Alternative: UART loading
 
@@ -552,85 +562,32 @@ at `PIN_115` (3.3-V LVCMOS, see §7), so wiring a host-side sender for the padde
 
 ### Simulation
 
-Quartus generated a Questa netlist under `simulation/questa/`
-(`Mips_Multi_Cycle_Cpu.vo`, `Mips_Multi_Cycle_Cpu.sft`). Note that the ISSP
-cores are hard IP and do not simulate meaningfully; a functional testbench would
-need to stub or bypass them (e.g. simulate `cpu_top_mc` directly rather than
-`top_cpu_mc`).
+A Questa testbench drives `cpu_top_mc` directly with `program.hex`/`data.hex`,
+pulses `start`, and checks the run: HALT reached, `MEM2` visited, no `TRAP`,
+and `mem[10] = $2 = 55` for the default sum program. (The board-level
+`top_cpu_mc` is not simulated — its debounce/divider/display logic is
+board-only. Quartus can also emit a gate-level netlist under
+`simulation/questa/`, gitignored.)
 
 ---
 
-## 10. Debugging with ISSP
+## 10. Debugging (ISSP removed)
 
-Five `altera_in_system_sources_probes` cores are instantiated in `top_cpu_mc.v`.
-Each probe word *n* occupies bits `[32n+31 : 32n]` within its instance.
+Five `altera_in_system_sources_probes` cores used to be instantiated in
+`top_cpu_mc.v` (register file halves, data-memory halves, and a status word),
+guarded by the `CPU_ISSP` macro. They were the area hog — 4 × 480 + 312 bits
+of shadow registers on top of the register file — and Quartus had to duplicate
+the whole `dmem` into flip-flops to serve the 32 fixed memory taps. After the
+synchronous-`dmem` + `MEM2` fix freed ~2,500 LEs, the cores and their
+Platform Designer sources (`cpu_issp_*/*.qsys`, `.qsys_edit/`, `.spf`
+snapshots, `.qsf` `QIP_FILE` lines) were removed outright. They remain
+recoverable from git history if live probing is ever needed again.
 
-> **Compile-time optional — and off by default.** The whole probe section is
-> guarded by the `CPU_ISSP` macro in `Mips_Multi_Cycle_Cpu.qsf`. It is commented
-> out by default because the probes plus the display register select exceed the
-> EP4CE6's logic (see §1); uncomment it only after freeing logic elsewhere. The
-> `.spf` snapshots require it enabled.
-
-The cores are limited by the **ALTSOURCE_PROBE hard 511-bit `PROBE_WIDTH`
-limit** — which is why no instance uses 16 full words (512 bits). The 5-instance
-split maximizes coverage within that ceiling.
-
-### `cpu_issp_regs_lo` — 480 bits
-
-| Bits | Contents |
-|---|---|
-| `[31:0]` | `$0` (tied to constant 0 — reading back 0 is a sanity check) |
-| `[63:32]` … `[479:448]` | `$1` … `$14` |
-
-### `cpu_issp_regs_hi` — 480 bits
-
-| Bits | Contents |
-|---|---|
-| `[31:0]` … `[479:448]` | `$15` … `$29` |
-
-### `cpu_issp_dmem_lo` — 480 bits
-
-| Bits | Contents |
-|---|---|
-| `[31:0]` … `[479:448]` | `mem[0]` … `mem[14]` |
-
-### `cpu_issp_dmem_hi` — 480 bits
-
-| Bits | Contents |
-|---|---|
-| `[31:0]` … `[479:448]` | `mem[15]` … `mem[29]` |
-
-### `cpu_issp_status` — 312 bits
-
-| Bits | Width | Contents |
-|---|---|---|
-| `[311:300]` | 12 | `PC` |
-| `[299:296]` | 4 | FSM state (see §3.3 encoding) |
-| `[295]` | 1 | Sticky overflow flag |
-| `[294]` | 1 | Sticky illegal-opcode flag |
-| `[293:262]` | 32 | `HI` |
-| `[261:230]` | 32 | `LO` |
-| `[229:198]` | 32 | Current latched instruction (`ir_reg`) |
-| `[197:193]` | 5 | Data-memory address |
-| `[192:161]` | 32 | Data-memory write data |
-| `[160]` | 1 | Data-memory write enable |
-| `[159:128]` | 32 | Data-memory read data |
-| `[127:96]` | 32 | `$30` |
-| `[95:64]` | 32 | `$31` |
-| `[63:32]` | 32 | `mem[30]` |
-| `[31:0]` | 32 | `mem[31]` |
-
-`$30`, `$31`, `mem[30]`, and `mem[31]` live here because they did not fit in the
-15-word (480-bit) groups.
-
-**Debugging tips:**
-
-* Watch the **FSM state** field to see exactly which cycle is executing.
-* `state == 6` means an illegal instruction was decoded — freeze and inspect
-  `ir_reg`.
-* `state == 9` means the program hit its `HALT`.
-* If results look wrong, check the sticky **overflow** flag before suspecting
-  arithmetic.
+**On-board debugging now:** the 7-segment display shows any register's low
+16 bits (`KEY[0]` steps `$0`–`$31`, `KEY[1]` held shows the index), and the
+decimal point lights when the sticky overflow flag latches. FSM-state and
+HALT/TRAP diagnosis (`state == 6` = illegal instruction, `state == 9` = HALT)
+is done in simulation via the `debug_state` port.
 
 ---
 
@@ -689,9 +646,9 @@ The nine issues previously documented here are all addressed:
 * **1** — `UART_RXD` is pinned at `PIN_115` (3.3-V LVCMOS) in the `.qsf` (§7).
 * **2–5** — the stale comments and the 7-bit PC literals were corrected in
   `top_cpu_mc.v`, `cpu_top_mc.v`, `regfile.v`, and `uart_loader.v`.
-* **6** — the ISSP probe cores are now compile-time optional via the `CPU_ISSP`
-  macro; they ship **disabled** because they no longer fit alongside the display
-  register select (§10, §1).
+* **6** — the ISSP probe cores are now removed outright (first made
+   compile-time optional via the `CPU_ISSP` macro, then deleted with the `dmem`
+   tap removal — see §10).
 * **7** — `dmem` grew to 512 words and MMIO moved to addresses 510/511 (§6).
 * **8** — `program.asm`, `program(sum).asm`, and `program(big_test).asm` are
   checked in, with the matching `.hex` images regenerated (§11).
@@ -699,15 +656,18 @@ The nine issues previously documented here are all addressed:
 
 What remains worth knowing:
 
-1. **Verified by synthesis, not on hardware.** Analysis & Synthesis, the Fitter,
-   and TimeQuest all pass from this state (92 % logic, +11.313 ns setup slack,
-   §1), but the changes have not been exercised on the board. The display select,
-   the 512-word `dmem`, and the MMIO move to 510/511 should be checked on
-   hardware.
-2. **The ISSP probes no longer fit by default.** With `CPU_ISSP` enabled the
-   Fitter fails (~7,566 combinational nodes against 6,272), so the macro ships
-   commented out and the `.spf` snapshots do not work in the default build.
-   Re-enabling it requires reclaiming logic (drop probe cores or the display mux).
+1. **Verified by synthesis and simulation, not on hardware.** Analysis &
+   Synthesis, the Fitter, and TimeQuest all pass from this state (52 % logic,
+   +13.470 ns setup slack, §1), and a Questa testbench runs the sum program
+   end-to-end (HALT in 267 cycles, `mem[10] = $2 = 55`, `MEM2` visited, no
+   `TRAP`). But the new `dmem`/`MEM2` timing has not been exercised on the
+   board — the display select, the 512-word `dmem`, and the MMIO move to
+   510/511 should be checked on hardware.
+2. **Live probing was removed, not just disabled.** The ISSP cores were first
+   made compile-time optional via the `CPU_ISSP` macro, then deleted outright
+   with the `dmem` tap removal (§10) — the 52 % fit carries no debug overhead,
+   at the cost that the old `.spf` snapshots no longer have anything to attach
+   to.
 3. **Two MMIO addresses stay partly consumed.** `mem[510]` is unreadable via
    `LW` and `mem[511]` is unwritable via `SW` (§6).
 4. **`cpu_clk` is not separately constrained.** `timing_constraints.sdc` only
@@ -740,8 +700,7 @@ The design evolved in five stages:
    back in `IDLE`. The ALU gained the `Ov` output for signed overflow.
 3. **Auto-run mode.** Instructions began returning to `IF` instead of `IDLE`, so
    one `KEY[2]` press runs the whole program; `IDLE` became a one-time entry
-   state. The PC widened to 12 bits (4,096 instructions) and the ISSP probes were
-   reorganized into the current 5-core, 480/312-bit layout.
+   state. The PC widened to 12 bits (4,096 instructions).
 4. **Instruction-set growth.** Added `MULT`/`DIV` (shared 32-cycle shift-add /
    restoring-division loop), `MFHI`/`MFLO`, `JAL`, `HALT`, and the sticky
    `overflow` / `illegal_opcode` flags; `TRAP` was introduced for unrecognized
@@ -750,6 +709,12 @@ The design evolved in five stages:
    LEDs at 31, later moved to 510/511 when `dmem` grew), a 9600-baud UART program
    loader, and finally the cleanup that removed the single-cycle legacy files,
    `.bak` snapshots, and duplicate artifacts.
+6. **Synchronous `dmem` + `MEM2`.** `dmem`'s 32 fixed-address debug taps had been
+   forcing Quartus to shadow the whole 512-word memory into flip-flops
+   (~5,790 LEs, 92 % full, and masking a latent Error 276003 once the taps were
+   removed). The read path is now registered so Quartus infers 2× M9K, with a
+   new `MEM2` FSM state absorbing the extra cycle (LW = IF, ID, EX, MEM, MEM2,
+   WB) — fit dropped to ~3,279 LEs (52 %), verified by Questa sim.
 
 ---
 

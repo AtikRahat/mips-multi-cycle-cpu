@@ -63,7 +63,15 @@ module regfile (
     output [31:0] dbg_r31
 );
 
-    reg [31:0] registers [0:31];
+    // ramstyle = "logic" tells Quartus not to attempt RAM-megafunction
+    // inference on this array. It has 33 simultaneous read requirements
+    // (read_reg1, read_reg2, plus 31 fixed debug taps), which exceeds
+    // Cyclone IV M9K's 2-read-port limit and can never be a valid RAM
+    // candidate anyway - forcing "logic" skips the failed inference
+    // attempt (and the max_number_of_registers_from_uninferred_rams
+    // error it can trigger) and goes straight to flip-flops, which is
+    // what this array was always implemented as regardless.
+    (* ramstyle = "logic" *) reg [31:0] registers [0:31];
 
     assign dbg_r1  = registers[1];
     assign dbg_r2  = registers[2];

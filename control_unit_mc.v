@@ -16,7 +16,7 @@
 //   one press runs everything, no matter how many instructions.
 //
 //   R-type / ADDI : IF ID EX WB -> IF (next instr)     (4 cycles)
-//   LW            : IF ID EX MEM WB -> IF               (5 cycles)
+//   LW            : IF ID EX MEM MEM2 WB -> IF           (6 cycles)
 //   SW            : IF ID EX MEM -> IF                  (4 cycles)
 //   BEQ/BNE/JR    : IF ID EX -> IF                       (3 cycles)
 //   JAL           : IF ID EX -> IF (writes $31 in EX)    (3 cycles)
@@ -55,7 +55,9 @@ module control_unit_mc (
     output       branch_target_write,// ID:  BranchTargetReg <= PCPlus1Reg + imm
     output       alu_out_write,      // EX:  ALUOut <= alu_result
     output       pc_write,           // EX:  PC <= (see pc_source mux)
-    output       mdr_write,          // MEM: MDR <= dmem_read_data
+    output       mdr_write,          // MEM2: MDR <= dmem_read_data (one cycle
+                                     // after MEM presents the address - dmem's
+                                     // read is synchronous for M9K inference)
     output       md_init,            // NEW EX: load MULT/DIV working regs
     output       md_step,            // NEW MD_LOOP: one shift-add/restoring-div step
     output       hi_write,           // NEW MD_DONE: HI <= final result
@@ -92,11 +94,14 @@ module control_unit_mc (
     localparam MD_DONE = 4'd8;   // NEW: MULT/DIV - one cycle to sign-correct
                                   // and write HI/LO
     localparam HALT    = 4'd9;   // NEW: explicit stop (opcode 111111). Reached
-                                  // only from EX, permanent until rst - same
-                                  // shape as TRAP, but a DELIBERATE stop, so
-                                  // illegal_opcode stays a trustworthy error
-                                  // flag instead of also firing on "program
-                                  // finished normally."
+                                   // only from EX, permanent until rst - same
+                                   // shape as TRAP, but a DELIBERATE stop, so
+                                   // illegal_opcode stays a trustworthy error
+                                   // flag instead of also firing on "program
+                                   // finished normally."
+    localparam MEM2    = 4'd10;  // LW only: dmem's read is synchronous (one
+                                 // cycle for M9K inference), so MEM presents
+                                 // the address and MEM2 captures the data
 
     reg [3:0] current_state = IDLE;
     assign state = current_state;
@@ -163,7 +168,12 @@ module control_unit_mc (
                          || is_mfhi || is_mflo)      next_state = WB;     // needs a writeback cycle
                 else                                  next_state = IF;    // BEQ/BNE/JAL/JR: auto-continue
             end
-            MEM:     next_state = is_lw ? WB : IF;    // AUTO-RUN: was IDLE
+            MEM:     next_state = is_lw ? MEM2 : IF;  // SW done here (write
+                                                       // happens during MEM);
+                                                       // LW waits one more
+                                                       // cycle for dmem data
+            MEM2:    next_state = WB;                   // LW only - data ready,
+                                                       // capture it this cycle
             WB:      next_state = IF;                 // AUTO-RUN: was IDLE
             MD_LOOP: next_state = md_counter_done ? MD_DONE : MD_LOOP; // NEW: stay 32 cycles
             MD_DONE: next_state = IF;                 // AUTO-RUN: was IDLE
@@ -196,7 +206,7 @@ module control_unit_mc (
     assign ab_write             = (current_state == ID);
     assign branch_target_write  = (current_state == ID);
     assign alu_out_write        = (current_state == EX);
-    assign mdr_write             = (current_state == MEM);
+    assign mdr_write             = (current_state == MEM2);
 
     // NEW: MULT/DIV control
     assign md_init = (current_state == EX) && (is_mult | is_div);

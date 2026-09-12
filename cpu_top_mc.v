@@ -38,20 +38,9 @@ module cpu_top_mc (
     output [31:0] debug_dmem_write_data,
     output        debug_dmem_write_enable,
     output [31:0] debug_dmem_read_data,
-    output [31:0] debug_dmem0,  output [31:0] debug_dmem1,  output [31:0] debug_dmem2,
-    output [31:0] debug_dmem3,  output [31:0] debug_dmem4,  output [31:0] debug_dmem5,
-    output [31:0] debug_dmem6,  output [31:0] debug_dmem7,  output [31:0] debug_dmem8,
-    output [31:0] debug_dmem9,  output [31:0] debug_dmem10, output [31:0] debug_dmem11,
-    output [31:0] debug_dmem12, output [31:0] debug_dmem13, output [31:0] debug_dmem14,
-    output [31:0] debug_dmem15, output [31:0] debug_dmem16, output [31:0] debug_dmem17,
-    output [31:0] debug_dmem18, output [31:0] debug_dmem19, output [31:0] debug_dmem20,
-    output [31:0] debug_dmem21, output [31:0] debug_dmem22, output [31:0] debug_dmem23,
-    output [31:0] debug_dmem24, output [31:0] debug_dmem25, output [31:0] debug_dmem26,
-    output [31:0] debug_dmem27, output [31:0] debug_dmem28, output [31:0] debug_dmem29,
-    output [31:0] debug_dmem30, output [31:0] debug_dmem31,
 
-    // NEW: which FSM state we're in right now - useful to watch on
-    // an ISSP while debugging, doesn't exist in the single-cycle design
+    // NEW: which FSM state we're in right now - observable in simulation
+    // via debug_state, doesn't exist in the single-cycle design
     // WIDENED from 3 to 4 bits to fit the new MULT/DIV states
     output [3:0]  debug_state,
 
@@ -236,19 +225,11 @@ module cpu_top_mc (
         .addr(alu_out_reg[8:0]),
         .write_data(b_reg),
         .write_enable(real_dmem_write),
-        .read_data(dmem_read_data_raw),
-        .dbg_mem0(debug_dmem0), .dbg_mem1(debug_dmem1), .dbg_mem2(debug_dmem2), .dbg_mem3(debug_dmem3),
-        .dbg_mem4(debug_dmem4), .dbg_mem5(debug_dmem5), .dbg_mem6(debug_dmem6), .dbg_mem7(debug_dmem7),
-        .dbg_mem8(debug_dmem8), .dbg_mem9(debug_dmem9), .dbg_mem10(debug_dmem10), .dbg_mem11(debug_dmem11),
-        .dbg_mem12(debug_dmem12), .dbg_mem13(debug_dmem13), .dbg_mem14(debug_dmem14), .dbg_mem15(debug_dmem15),
-        .dbg_mem16(debug_dmem16), .dbg_mem17(debug_dmem17), .dbg_mem18(debug_dmem18), .dbg_mem19(debug_dmem19),
-        .dbg_mem20(debug_dmem20), .dbg_mem21(debug_dmem21), .dbg_mem22(debug_dmem22), .dbg_mem23(debug_dmem23),
-        .dbg_mem24(debug_dmem24), .dbg_mem25(debug_dmem25), .dbg_mem26(debug_dmem26), .dbg_mem27(debug_dmem27),
-        .dbg_mem28(debug_dmem28), .dbg_mem29(debug_dmem29), .dbg_mem30(debug_dmem30), .dbg_mem31(debug_dmem31)
+        .read_data(dmem_read_data_raw)
     );
 
     assign debug_instruction       = ir_reg;
-    assign debug_dmem_addr         = alu_out_reg[4:0]; // low 5 bits only, so the ISSP status probe stays 312 bits
+    assign debug_dmem_addr         = alu_out_reg[4:0]; // low 5 bits only
     assign debug_dmem_write_data   = b_reg;
     assign debug_dmem_write_enable = dmem_write;
     assign debug_dmem_read_data    = dmem_read_data;

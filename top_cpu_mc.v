@@ -125,19 +125,15 @@ module top_cpu_mc (
     wire start_pulse = (sync2 & ~sync2_prev) & ~uart_loading;
 
     wire [31:0] r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31;
-    wire [11:0] pc_debug;  // 12 bits (4,096 instructions); carried in
-                           // probe_bus_status below
+    wire [11:0] pc_debug;  // 12 bits (4,096 instructions)
     wire [31:0] cur_instr;
     wire [4:0]  dmem_addr;
     wire [31:0] dmem_wdata, dmem_rdata;
     wire        dmem_we;
-    wire [31:0] mem0, mem1, mem2, mem3, mem4, mem5, mem6, mem7, mem8, mem9, mem10;
-    wire [31:0] mem11, mem12, mem13, mem14, mem15, mem16, mem17, mem18, mem19, mem20;
-    wire [31:0] mem21, mem22, mem23, mem24, mem25, mem26, mem27, mem28, mem29, mem30, mem31;
     wire [3:0]  fsm_state; // WIDENED to 4 bits for MULT/DIV's new MD_LOOP/MD_DONE states
-    wire        overflow_flag; // NEW: sticky signed-overflow flag
-    wire        illegal_opcode_flag; // NEW: sticky illegal-opcode/TRAP flag, now wired to an ISSP
-    wire [31:0] hi_debug, lo_debug;  // NEW: HI/LO architectural registers, now wired to an ISSP
+    wire        overflow_flag; // sticky signed-overflow flag
+    wire        illegal_opcode_flag; // sticky illegal-opcode/TRAP flag
+    wire [31:0] hi_debug, lo_debug;  // HI/LO architectural registers
 
     cpu_top_mc mycpu (
         .clk(cpu_clk),
@@ -157,23 +153,6 @@ module top_cpu_mc (
         .debug_dmem_write_data(dmem_wdata),
         .debug_dmem_write_enable(dmem_we),
         .debug_dmem_read_data(dmem_rdata),
-        .debug_dmem0(mem0), .debug_dmem1(mem1),
-        .debug_dmem2(mem2), .debug_dmem3(mem3),
-        .debug_dmem4(mem4), .debug_dmem5(mem5),
-        .debug_dmem6(mem6), .debug_dmem7(mem7),
-        .debug_dmem8(mem8), .debug_dmem9(mem9),
-        .debug_dmem10(mem10),
-        .debug_dmem11(mem11), .debug_dmem12(mem12),
-        .debug_dmem13(mem13), .debug_dmem14(mem14),
-        .debug_dmem15(mem15), .debug_dmem16(mem16),
-        .debug_dmem17(mem17), .debug_dmem18(mem18),
-        .debug_dmem19(mem19), .debug_dmem20(mem20),
-        .debug_dmem21(mem21), .debug_dmem22(mem22),
-        .debug_dmem23(mem23), .debug_dmem24(mem24),
-        .debug_dmem25(mem25), .debug_dmem26(mem26),
-        .debug_dmem27(mem27), .debug_dmem28(mem28),
-        .debug_dmem29(mem29), .debug_dmem30(mem30),
-        .debug_dmem31(mem31),
         .debug_state(fsm_state),
         .debug_overflow(overflow_flag),
         .debug_illegal_opcode(illegal_opcode_flag),
@@ -233,117 +212,5 @@ module top_cpu_mc (
         .seg(SEG),
         .an(DIG)
     );
-
-    //================================================================
-    // ISSP instances - 5 instances. NOTE: ALTSOURCE_PROBE has a hard
-    // PROBE_WIDTH limit of 511 bits (confirmed by a real Quartus
-    // Analysis & Synthesis error: 16 words x 32 bits = 512 bits was
-    // rejected). So each register/memory instance below holds 15
-    // words (480 bits), not 16 - the 4 words that don't fit
-    // ($30, $31, mem30, mem31) are folded into cpu_issp_status
-    // instead, which has plenty of headroom.
-    //   cpu_issp_regs_lo   - registers $0-$14   (480 bits)
-    //   cpu_issp_regs_hi   - registers $15-$29  (480 bits)
-    //   cpu_issp_dmem_lo   - memory[0..14]      (480 bits)
-    //   cpu_issp_dmem_hi   - memory[15..29]     (480 bits)
-    //   cpu_issp_status    - PC, FSM state, overflow, illegal-opcode,
-    //                        HI, LO, current instruction, live dmem
-    //                        transaction, plus $30/$31/mem30/mem31
-    //                        (312 bits)
-    // Word n occupies bits [32*n+31 : 32*n] within its instance.
-    //
-    // The whole probe section is compile-time optional: define the
-    // CPU_ISSP macro (see the .qsf) for a full-debug build, or omit it
-    // to reclaim the ~2,232 probe shadow registers on this 98%-full
-    // device. The .spf snapshots require the macro ON.
-    //================================================================
-`ifdef CPU_ISSP
-
-    //--------------------------------------------------------------
-    // cpu_issp_regs_lo: $0-$14. $0 is architecturally hardwired to
-    // zero in MIPS (no real debug port for it) - tied to a constant
-    // here so it's visible, and reading 0 back is a sanity check.
-    //--------------------------------------------------------------
-    wire [479:0] probe_bus_regs_lo = {
-        r14, r13, r12, r11, r10, r9, r8,
-        r7, r6, r5, r4, r3, r2, r1, 32'd0
-    };
-
-    cpu_issp_regs_lo inst_issp_regs_lo (
-        .source (),
-        .probe  (probe_bus_regs_lo)
-    );
-
-    //--------------------------------------------------------------
-    // cpu_issp_regs_hi: $15-$29 ($30/$31 moved into cpu_issp_status)
-    //--------------------------------------------------------------
-    wire [479:0] probe_bus_regs_hi = {
-        r29, r28, r27, r26, r25, r24, r23,
-        r22, r21, r20, r19, r18, r17, r16, r15
-    };
-
-    cpu_issp_regs_hi inst_issp_regs_hi (
-        .source (),
-        .probe  (probe_bus_regs_hi)
-    );
-
-    //--------------------------------------------------------------
-    // cpu_issp_dmem_lo: memory[0..14]
-    //--------------------------------------------------------------
-    wire [479:0] probe_bus_dmem_lo = {
-        mem14, mem13, mem12, mem11, mem10, mem9, mem8,
-        mem7, mem6, mem5, mem4, mem3, mem2, mem1, mem0
-    };
-
-    cpu_issp_dmem_lo inst_issp_dmem_lo (
-        .source (),
-        .probe  (probe_bus_dmem_lo)
-    );
-
-    //--------------------------------------------------------------
-    // cpu_issp_dmem_hi: memory[15..29] (mem30/mem31 moved into
-    // cpu_issp_status)
-    //--------------------------------------------------------------
-    wire [479:0] probe_bus_dmem_hi = {
-        mem29, mem28, mem27, mem26, mem25, mem24, mem23,
-        mem22, mem21, mem20, mem19, mem18, mem17, mem16, mem15
-    };
-
-    cpu_issp_dmem_hi inst_issp_dmem_hi (
-        .source (),
-        .probe  (probe_bus_dmem_hi)
-    );
-
-    //--------------------------------------------------------------
-    // cpu_issp_status: PC, FSM state, sticky overflow/illegal-opcode
-    // flags, HI/LO, currently-fetched instruction, live dmem
-    // transaction, plus the 4 leftover register/memory words that
-    // didn't fit in the 15-word groups above ($30, $31, mem30, mem31).
-    // 312 bits: 184 (original status fields) + 32*4 (leftover words)
-    //--------------------------------------------------------------
-    wire [311:0] probe_bus_status = {
-        pc_debug,             // [311:300]
-        fsm_state,             // [299:296]
-        overflow_flag,          // [295]
-        illegal_opcode_flag,     // [294]
-        hi_debug,                // [293:262]
-        lo_debug,                 // [261:230]
-        cur_instr,                 // [229:198]
-        dmem_addr,                  // [197:193]
-        dmem_wdata,                  // [192:161]
-        dmem_we,                      // [160]
-        dmem_rdata,                    // [159:128]
-        r30,                            // [127:96]
-        r31,                             // [95:64]
-        mem30,                            // [63:32]
-        mem31                              // [31:0]
-    };
-
-    cpu_issp_status inst_issp_status (
-        .source (),
-        .probe  (probe_bus_status)
-    );
-
-`endif
 
 endmodule

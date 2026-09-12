@@ -17,6 +17,8 @@ output_files/*.smsg
 output_files/*.cdf
 output_files/*.sft
 output_files/*.vo
+output_files/*.sof
+output_files/*.spf
 *.sopcinfo
 .qsys_edit/*.nlf
 .qsys_edit/*_schematic.nlv
@@ -30,3 +32,5 @@ poster/*.fdb_latexmk
 poster/*.synctex.gz
 # Agent file
 .commandcode
+config.bat
+node_modules

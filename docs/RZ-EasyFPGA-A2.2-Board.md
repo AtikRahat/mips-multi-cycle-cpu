@@ -377,7 +377,7 @@ by this design. The board-specific quirks are handled exactly as §10 warns:
 keys on the raw 50 MHz clock.
 
 See [`../README.md`](../README.md) §7 for the project's pin table and §1 for the
-current fit (92 % logic on this 6,272-LE device).
+current fit (52 % logic on this 6,272-LE device).
 
 ---
 

@@ -31,8 +31,9 @@ written in `top_cpu_mc.v`, `cpu_top_mc.v`, `control_unit_mc.v`, `ALU_32_bit.v`,
 ## 1. System overview (board level)
 
 `top_cpu_mc.v` is the top-level entity. It owns all board-specific concerns —
-pin wiring, clock division, debouncing, and the debug probes — and wraps the
-CPU, which runs on a divided clock.
+pin wiring, clock division, debouncing, the register-select display, and
+memory-mapped LED/button I/O — and wraps the CPU, which runs on a divided
+clock.
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
@@ -62,7 +63,7 @@ flowchart LR
         D4["debounce<br/>KEY[4]"]
         SEG["seg7_display<br/>+ seg7_decoder"]
         LED["LEDG[3:0]<br/>active-LOW"]
-        DBG["5 x ISSP<br/>debug cores"]
+        SEL["KEY[0]/KEY[1]<br/>register select"]
     end
 
     CLK --> DIV --> CCP --> CPU
@@ -72,8 +73,8 @@ flowchart LR
     CLK --> URX --> ULD -->|"program image"| CPU
 
     CPU -->|mmio_led_out| LED
-    CPU -->|"PC, state, HI/LO, regs"| DBG
-    CPU -->|"$5..$8, overflow"| SEG
+    CPU -->|"any reg lo16, overflow"| SEG
+    CPU -->|"$0..$31 regs"| SEL
 
     classDef clk fill:#f1f3f5,stroke:#868e96,color:#343a40
     classDef cpu fill:#e7f5ff,stroke:#1971c2,color:#0b3d66,stroke-width:2px
@@ -81,7 +82,7 @@ flowchart LR
 
     class CLK,DIV,CCP,D2,SY2,D3,SY3,D4 clk
     class CPU cpu
-    class URX,ULD,SEG,LED,DBG io
+    class URX,ULD,SEG,LED,SEL io
 ```
 
 **Clock domains.** Everything left of `cpu_top_mc`'s clock input runs on the raw
@@ -225,7 +226,7 @@ These are the edges omitted from §2.1.
 
 ## 3. Instruction lifecycle
 
-The normal execution path — one shared datapath, reused 3–5 times per
+The normal execution path — one shared datapath, reused 3–6 times per
 instruction. The complete FSM, including `TRAP` and `HALT`, is in §6.2.
 
 ```mermaid
@@ -239,8 +240,9 @@ flowchart LR
     EX -->|"LW / SW"| MEM["MEM"]
     EX -->|"BEQ, BNE,<br/>JR, JAL"| NEXT
 
-    MEM -->|LW| WB
+    MEM -->|LW| MEM2["MEM2"]
     MEM -->|SW| NEXT
+    MEM2 -->|LW| WB
     WB -->|auto-run| NEXT
 
     NEXT(["back to IF<br/>auto-run"])
@@ -250,9 +252,13 @@ flowchart LR
     classDef hub fill:#f3f0ff,stroke:#7048e8,color:#3b2a75,stroke-width:2px
 
     class IDLE idle
-    class IF,ID,EX,MEM,WB stage
+    class IF,ID,EX,MEM,MEM2,WB stage
     class NEXT hub
 ```
+
+`MEM2` exists because `dmem`'s read is synchronous (one cycle of latency so
+Quartus infers M9K): `MEM` presents the address, `MEM2` captures the data
+(`mdr_write`). `SW` writes during `MEM` and skips `MEM2`.
 
 `rst` returns the FSM to `IDLE` from any state. The three terminal states — `WB`,
 `MEM` after an `SW`, and `EX` for the branches and jumps — all converge on the
@@ -398,7 +404,8 @@ MIPS. `HI` and `LO` are read back through the write-back mux by `MFHI`
 | `IF` | `4'd1` | `ID` |
 | `ID` | `4'd2` | `EX` |
 | `EX` | `4'd3` | `TRAP` if illegal, else `HALT` if halt, else `MD_LOOP` if mult/div, else `MEM` if lw/sw, else `WB` if rtype/addi/mfhi/mflo, else **`IF`** |
-| `MEM` | `4'd4` | `WB` if `lw`, else `IF` |
+| `MEM` | `4'd4` | `MEM2` if `lw`, else `IF` |
+| `MEM2` | `4'd10` | `WB` (LW only — `dmem` synchronous-read data ready) |
 | `WB` | `4'd5` | `IF` |
 | `TRAP` | `4'd6` | `TRAP` (absorbing) |
 | `MD_LOOP` | `4'd7` | `MD_DONE` if `md_counter_done`, else `MD_LOOP` |
@@ -423,8 +430,9 @@ flowchart TB
     EX -->|"HALT instr"| HALT["HALT"]
     EX -->|illegal| TRAP["TRAP"]
 
-    MEM -->|LW| WB
+    MEM -->|LW| MEM2["MEM2"]
     MEM -->|SW| NEXT
+    MEM2 -->|LW| WB
 
     MD_LOOP -->|"counter = 31"| MD_DONE["MD_DONE"]
     MD_DONE --> NEXT
@@ -441,7 +449,7 @@ flowchart TB
     classDef abs fill:#fff5f5,stroke:#e03131,color:#7d1a1a
     classDef hub fill:#f3f0ff,stroke:#7048e8,color:#3b2a75,stroke-width:2px
 
-    class IDLE,IF,ID,EX,MEM,WB pipe
+    class IDLE,IF,ID,EX,MEM,MEM2,WB pipe
     class MD_LOOP,MD_DONE md
     class TRAP,HALT abs
     class NEXT hub
@@ -462,21 +470,21 @@ permanent — only `rst` leaves them. The sticky `illegal_opcode` flag latches w
 
 ### 6.3 Control signals asserted per state
 
-| Signal | IDLE | IF | ID | EX | MEM | WB | MD_LOOP | MD_DONE | TRAP | HALT |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `ir_write` | | ● | | | | | | | | |
-| `pc_plus1_write` | | ● | | | | | | | | |
-| `ab_write` | | | ● | | | | | | | |
-| `branch_target_write` | | | ● | | | | | | | |
-| `alu_out_write` | | | | ● | | | | | | |
-| `pc_write` | | | | ● | | | | | | |
-| `mdr_write` | | | | | ● | | | | | |
-| `md_init` | | | | ● ¹ | | | | | | |
-| `md_step` | | | | | | | ● | | | |
-| `hi_write` | | | | | | | | ● | | |
-| `lo_write` | | | | | | | | ● | | |
-| `dmem_write` | | | | | ● ² | | | | | |
-| `reg_write` | | | | ● ³ | | ● ⁴ | | | | |
+| Signal | IDLE | IF | ID | EX | MEM | MEM2 | WB | MD_LOOP | MD_DONE | TRAP | HALT |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ir_write` | | ● | | | | | | | | | |
+| `pc_plus1_write` | | ● | | | | | | | | | |
+| `ab_write` | | | ● | | | | | | | | |
+| `branch_target_write` | | | ● | | | | | | | | |
+| `alu_out_write` | | | | ● | | | | | | | |
+| `pc_write` | | | | ● | | | | | | | |
+| `mdr_write` | | | | | | ● | | | | | |
+| `md_init` | | | | ● ¹ | | | | | | | |
+| `md_step` | | | | | | | | ● | | | |
+| `hi_write` | | | | | | | | | ● | | |
+| `lo_write` | | | | | | | | | ● | | |
+| `dmem_write` | | | | | ● ² | | | | | | |
+| `reg_write` | | | | ● ³ | | | ● ⁴ | | | | |
 
 ¹ MULT / DIV only  
 ² SW only  
@@ -579,81 +587,33 @@ guarantees a pulse a full `cpu_clk` period wide.
 
 ---
 
-## 9. ISSP debug probe layout
+## 9. On-board visibility (ISSP removed)
 
-Five `altera_in_system_sources_probes` cores, clocked from the JTAG domain.
-Word *n* within an instance occupies bits `[32n+31 : 32n]`, with no gaps.
-
-> The whole probe section is compile-time optional (the `CPU_ISSP` macro in the
-> `.qsf`). It ships disabled because the probes plus the display register select
-> exceed the device's logic.
+Five `altera_in_system_sources_probes` cores used to expose the register file,
+data memory, and status word to the JTAG debugger. They were the area hog and
+forced `dmem` into flip-flops, so they were deleted with the synchronous-`dmem`
+fix — the Platform Designer sources, `.spf` snapshots, and `.qsf` `QIP_FILE`
+lines are gone (recoverable from git history). What remains:
 
 ```mermaid
 %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 flowchart LR
     CPU["cpu_top_mc.v<br/>debug ports"]
-    RLO["cpu_issp_regs_lo<br/>480 bits<br/>$0 .. $14"]
-    RHI["cpu_issp_regs_hi<br/>480 bits<br/>$15 .. $29"]
-    DLO["cpu_issp_dmem_lo<br/>480 bits<br/>mem[0] .. mem[14]"]
-    DHI["cpu_issp_dmem_hi<br/>480 bits<br/>mem[15] .. mem[29]"]
-    STA["cpu_issp_status<br/>312 bits<br/>PC, state, flags, HI/LO,<br/>ir_reg, dmem, $30, $31"]
-    JTAG["JTAG debugger"]
+    SEG["seg7_display<br/>any reg lo16 + overflow dot"]
+    SIM["Questa sim<br/>debug_state, regs, mem"]
 
-    CPU --> RLO
-    CPU --> RHI
-    CPU --> DLO
-    CPU --> DHI
-    CPU --> STA
-
-    RLO --> JTAG
-    RHI --> JTAG
-    DLO --> JTAG
-    DHI --> JTAG
-    STA --> JTAG
+    CPU -->|"debug_reg1..31"| SEG
+    CPU -->|"debug_state, mem[]"| SIM
 
     classDef store fill:#fff4e6,stroke:#e8890c,color:#7a3d00
-    classDef mem fill:#ebfbee,stroke:#2f9e44,color:#14532d
     classDef io fill:#fff5f5,stroke:#e03131,color:#7d1a1a
-    class CPU,RLO,RHI store
-    class DLO,DHI mem
-    class STA,JTAG io
+    class CPU store
+    class SEG,SIM io
 ```
 
-| Core | Width | Bits `[31:0]` | Bits `[479:448]` |
-|---|---|---|---|
-| `cpu_issp_regs_lo` | 480 | `$0` (tied to constant 0) | `$14` |
-| `cpu_issp_regs_hi` | 480 | `$15` | `$29` |
-| `cpu_issp_dmem_lo` | 480 | `mem[0]` | `mem[14]` |
-| `cpu_issp_dmem_hi` | 480 | `mem[15]` | `mem[29]` |
-
-So `cpu_issp_regs_lo` holds `$0`–`$14` and `cpu_issp_regs_hi` holds `$15`–`$29`,
-packed at `$n` → bits `[32n+31 : 32n]`. The memory cores follow the same pattern
-for `mem[0]`–`mem[14]` and `mem[15]`–`mem[29]`.
-
-### `cpu_issp_status` — 312 bits
-
-| Bits | Width | Contents |
-|---|---|---|
-| `[311:300]` | 12 | PC |
-| `[299:296]` | 4 | FSM state |
-| `[295]` | 1 | sticky overflow flag |
-| `[294]` | 1 | sticky illegal-opcode flag |
-| `[293:262]` | 32 | HI |
-| `[261:230]` | 32 | LO |
-| `[229:198]` | 32 | `ir_reg` (current instruction) |
-| `[197:193]` | 5 | dmem address |
-| `[192:161]` | 32 | dmem write data |
-| `[160]` | 1 | dmem write enable |
-| `[159:128]` | 32 | dmem read data |
-| `[127:96]` | 32 | `$30` |
-| `[95:64]` | 32 | `$31` |
-| `[63:32]` | 32 | `mem[30]` |
-| `[31:0]` | 32 | `mem[31]` |
-
-**Why this grouping:** `ALTSOURCE_PROBE` has a hard **511-bit `PROBE_WIDTH`
-limit** — 16 words × 32 bits = 512 bits is rejected. Each core therefore carries
-15 words (480 bits), and the four leftovers (`$30`, `$31`, `mem[30]`, `mem[31]`)
-are folded into the status core, which has headroom.
+`KEY[0]` steps the displayed register (`$0`–`$31`), `KEY[1]` held shows the
+index, and the decimal point flags sticky overflow. FSM-state and HALT/TRAP
+diagnosis happens in simulation through `debug_state`.
 
 ---
 
@@ -668,8 +628,8 @@ flowchart LR
     A0["R-type / ADDI / MFHI / MFLO — 4 cycles"] --> A1
     A1["IF"] --> A2["ID"] --> A3["EX"] --> A4["WB"]
 
-    B0["LW — 5 cycles"] --> B1
-    B1["IF"] --> B2["ID"] --> B3["EX"] --> B4["MEM"] --> B5["WB"]
+    B0["LW — 6 cycles"] --> B1
+    B1["IF"] --> B2["ID"] --> B3["EX"] --> B4["MEM"] --> B4b["MEM2"] --> B5["WB"]
 
     C0["SW — 4 cycles"] --> C1
     C1["IF"] --> C2["ID"] --> C3["EX"] --> C4["MEM"]
@@ -683,7 +643,7 @@ flowchart LR
     classDef stage fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
     classDef big fill:#fff4e6,stroke:#e8890c,color:#7a3d00
     classDef lbl fill:#f8f9fa,stroke:#495057,color:#212529
-    class A1,A2,A3,A4,B1,B2,B3,B4,B5,C1,C2,C3,C4,D1,D2,D3,E1,E2,E3,E5 stage
+    class A1,A2,A3,A4,B1,B2,B3,B4,B4b,B5,C1,C2,C3,C4,D1,D2,D3,E1,E2,E3,E5 stage
     class E4 big
     class A0,B0,C0,D0,E0 lbl
 ```
@@ -693,7 +653,7 @@ flowchart LR
 | ADD, SUB, AND, OR, SLT | IF, ID, EX, WB | 4 |
 | ADDI | IF, ID, EX, WB | 4 |
 | MFHI, MFLO | IF, ID, EX, WB | 4 |
-| LW | IF, ID, EX, MEM, WB | 5 |
+| LW | IF, ID, EX, MEM, MEM2, WB | 6 |
 | SW | IF, ID, EX, MEM | 4 |
 | BEQ, BNE | IF, ID, EX | 3 |
 | JR, JAL | IF, ID, EX (JAL writes `$31` in EX) | 3 |
@@ -728,7 +688,6 @@ flowchart LR
         DEB["debounce.v<br/>+ edge_detector"]
         SEGD["seg7_display.v"]
         SEGC["seg7_decoder.v"]
-        ISSPS["5 x ISSP cores"]
     end
 
     subgraph LOADER["Serial loader"]
@@ -740,7 +699,6 @@ flowchart LR
     TOP --> CPU
     TOP --> DEB
     TOP --> SEGD
-    TOP --> ISSPS
     TOP --> URX
 
     CPU --> CTRL
@@ -761,10 +719,11 @@ flowchart LR
     class TOP top
     class CPU,CTRL,RF,ALU,ALUSUB cpu
     class IMEM,DMEM mem
-    class DEB,SEGD,SEGC,ISSPS,URX,ULD io
+    class DEB,SEGD,SEGC,URX,ULD io
 ```
 
-**Not in the build** (removed during the repository cleanup, recoverable from
-git commit `c64214a`): `cpu_top.v`, `top_cpu.v`, `control_unit.v`, and the legacy
-ISSP cores `cpu_issp_lo`, `cpu_issp_hi`, `cpu_issp_mem`, `cpu_issp_dmem2`,
-`cpu_issp_dmem3`.
+**Not in the build** (removed during cleanups, recoverable from git history):
+`cpu_top.v`, `top_cpu.v`, `control_unit.v`, the legacy ISSP cores `cpu_issp_lo`,
+`cpu_issp_hi`, `cpu_issp_mem`, `cpu_issp_dmem2`, `cpu_issp_dmem3`, and the
+multi-cycle ISSP cores `cpu_issp_regs_lo/hi`, `cpu_issp_dmem_lo/hi`,
+`cpu_issp_status` (see §9).

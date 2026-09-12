@@ -7,6 +7,11 @@ GitHub's built-in renderer, which does not bundle ELK).
 These are **generated artefacts**. The Mermaid source in `ARCHITECTURE.md` is
 the single source of truth — edit that, then re-render.
 
+> ⚠️ **Stale renders.** The PNGs for §1, §3, §6.2, §9, §10, and §11 predate the
+> synchronous-`dmem` + `MEM2` change and the ISSP removal, and no longer match
+> the source (§9's PNG was deleted outright). Re-render per the instructions
+> below before treating any of those six as current.
+
 ---
 
 ## 1. System overview (board level)
@@ -41,9 +46,10 @@ the single source of truth — edit that, then re-render.
 
 ![Clock domains](08-8-clock-reset-and-clock-domain-crossing.png)
 
-## 9. ISSP debug probe layout
+## 9. On-board visibility (ISSP removed)
 
-![ISSP probes](09-9-issp-debug-probe-layout.png)
+The ISSP probe-layout diagram was deleted with the cores (§9 of
+`ARCHITECTURE.md` now shows the display + simulation visibility instead).
 
 ## 10. Instruction timing
 
